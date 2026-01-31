@@ -104,7 +104,7 @@ static void* recv_thread_func(void* arg)
 	while (1) 
 	{
 		memset(&recv_msg, 0x0, sizeof(struct msg_t));
-		if (msgrcv(msgid, &recv_msg, MSG_SIZE, MSG_RECV_FROM_PARENT, IPC_NOWAIT) != -1)
+		if (msgrcv(msgid, &recv_msg, MSG_SIZE, MSG_RECV_CHILD1_FROM_PARENT, IPC_NOWAIT) != -1)
 		{
 			pthread_mutex_lock(&msg_mutex);
 			printf("\n");
@@ -149,7 +149,7 @@ static void* send_thread_func(void* arg)
 		{
 			pthread_mutex_lock(&msg_mutex);
 
-			send_msg.id = MSG_SEND_TO_PARENT;
+			send_msg.id = MSG_SEND_CHILD1_TO_PARENT;
 			memset(send_msg.text, 0x0, sizeof(send_msg.text));
 			memcpy(send_msg.text, _msg_text, strlen(_msg_text));
 

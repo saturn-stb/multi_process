@@ -19,10 +19,10 @@ OBJS = $(SRCS:%.c=$(OBJ_DIR)/%.o)
 DEPS = $(SRCS:%.c=$(OBJ_DIR)/%.d)
 
 # include 디렉토리 목록을 정의합니다.
-INC_DIRS = inc
+INC_DIRS = ../include inc
 
-INC_DIRS = $(shell find . -type d)
-INC_FLAGS = $(addprefix -I, $(INC_DIRS))
+INC_DIRS += $(shell find . -type d)
+INC_FLAGS := $(addprefix -I, $(INC_DIRS))
 
 FINAL_TARGET = $(if $(OUTPUT_DIR), $(OUTPUT_DIR)/$(TARGET), ../$(TARGET))
 

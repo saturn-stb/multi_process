@@ -18,8 +18,11 @@ OBJS = $(SRCS:%.c=$(OBJ_DIR)/%.o)
 # 1. 생성된 모든 .d 파일 목록 정의
 DEPS = $(SRCS:%.c=$(OBJ_DIR)/%.d)
 
-INC_DIRS = $(shell find . -type d)
-INC_FLAGS = $(addprefix -I, $(INC_DIRS))
+# include 디렉토리 목록을 정의합니다.
+INC_DIRS = ../include inc
+
+INC_DIRS += $(shell find . -type d)
+INC_FLAGS := $(addprefix -I, $(INC_DIRS))
 
 FINAL_TARGET = $(if $(OUTPUT_DIR), $(OUTPUT_DIR)/$(TARGET), ../$(TARGET))
 

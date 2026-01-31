@@ -25,10 +25,14 @@
 *
 *
 *---------------------------------------------------------------------------*/
+// taskMain <==> taskParent
+#define MSG_SEND_PARENT 1
+#define MSG_RECV_PARENT 30
+
 // taskParent <==> taskMain
 #define MSG_SEND_TO_BOSS 		30
 #define MSG_RECV_FROM_BOSS 		1
-	
+
 // taskParent <==> taskChild1
 #define MSG_SEND_TO_CHILD1 		2
 #define MSG_RECV_FROM_CHILD1 	10
@@ -36,6 +40,14 @@
 // taskParent <==> taskChild2
 #define MSG_SEND_TO_CHILD2 		3
 #define MSG_RECV_FROM_CHILD2 	20
+
+// taskChild1 <==> taskParent
+#define MSG_SEND_CHILD1_TO_PARENT 		10
+#define MSG_RECV_CHILD1_FROM_PARENT 	2
+
+// taskChild2 <==> taskParent
+#define MSG_SEND_CHILD2_TO_PARENT 		20
+#define MSG_RECV_CHILD2_FROM_PARENT 	3
 
 /*-----------------------------------------------------------------------------
 *
