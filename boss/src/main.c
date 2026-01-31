@@ -38,7 +38,7 @@
 *
 *---------------------------------------------------------------------------*/
 #define MSG_SIZE 64
-#define MAX_TASK 3 // except taskMain, taskParent, taskChild1, taskChild2
+#define MAX_TASK 4 // except taskMain, taskParent, taskChild1, taskChild2, taskChild3
 
 /*-----------------------------------------------------------------------------
 *
@@ -69,10 +69,10 @@ typedef struct
 *---------------------------------------------------------------------------*/
 static pthread_mutex_t msg_mutex;
 
-static pid_t p_pid, c1_pid, c2_pid;
+static pid_t p_pid, c1_pid, c2_pid, c3_pid;
 static int msgid;
 
-ProcInfo procs[MAX_TASK]; // taskParent, taskChild1, taskChild2
+ProcInfo procs[MAX_TASK]; // taskParent, taskChild1, taskChild2, taskChild3
 
 /******************************************************************************
 *
@@ -87,8 +87,8 @@ ProcInfo procs[MAX_TASK]; // taskParent, taskChild1, taskChild2
 void print_help(void) 
 {
 	printf("--- Control Commands ---\n" 
-			"1. pause  [taskParent/taskChild1/taskChild2]\n"
-			"2. resume [taskParent/taskChild1/taskChild2]\n"
+			"1. pause  [taskParent/taskChild1/taskChild2/taskChild3]\n"
+			"2. resume [taskParent/taskChild1/taskChild2/taskChild3]\n"
 			"4. status\n"
 			"5. help\n"
 			"6. exit\n"
@@ -125,6 +125,7 @@ void control_process(const char* command, const char* target)
 	if (strcmp(target, "taskParent") == 0) target_pid = p_pid;
 	else if (strcmp(target, "taskChild1") == 0) target_pid = c1_pid;
 	else if (strcmp(target, "taskChild2") == 0) target_pid = c2_pid;
+	else if (strcmp(target, "taskChild3") == 0) target_pid = c3_pid;
 
 	if (target_pid == 0) 
 	{
@@ -161,7 +162,10 @@ void cleanup_and_exit(int sig)
 {
 	(void)sig;
 	printf("\n[Main] Terminating all processes...\n");
-	kill(p_pid, SIGKILL); kill(c1_pid, SIGKILL); kill(c2_pid, SIGKILL);
+	kill(p_pid, SIGKILL); 
+	kill(c1_pid, SIGKILL); 
+	kill(c2_pid, SIGKILL);
+	kill(c3_pid, SIGKILL);
 	msgctl(msgid, IPC_RMID, NULL);
 	exit(0);
 }
@@ -242,7 +246,7 @@ void* send_thread_func(void* arg)
 			pthread_mutex_lock(&msg_mutex);
 
 			// 3. 일반 메시지 전송
-			send_msg.id = MSG_SEND_PARENT; // Parent행 메시지 타입
+			send_msg.id = MSG_SEND_BOSS_TO_PARENT; // Parent행 메시지 타입
 			strcpy(send_msg.text, input);
 
 			if (msgsnd(msgid, &send_msg, sizeof(send_msg.text), 0) == -1) 
@@ -272,7 +276,7 @@ void* recv_thread_func(void* arg)
 	{
 		memset(&revc_msg, 0, sizeof(struct msg_t));		
 		// Type 30 (Parent가 보낸 최종 ACK)만 선별 수신
-		if (msgrcv(msgid, &revc_msg, sizeof(revc_msg.text), MSG_RECV_PARENT, IPC_NOWAIT) != -1)
+		if (msgrcv(msgid, &revc_msg, sizeof(revc_msg.text), MSG_RECV_BOSS_FROM_PARENT, IPC_NOWAIT) != -1)
 		{
 			pthread_mutex_lock(&msg_mutex);
 			printf("\n");
@@ -314,7 +318,7 @@ int main(void)
 
 	// 프로세스 초기화 및 생성
 	int nTask = 0;
-	char *names[] = {"taskParent", "taskChild1", "taskChild2"};
+	char *names[] = {"taskParent", "taskChild1", "taskChild2", "taskChild3"};
 
 	nTask = 0;
 	// 1. taskParent 실행 (exec 사용 가정)
@@ -350,6 +354,18 @@ int main(void)
 		exit(1);
 	}
 	procs[nTask].pid = c2_pid;
+	strcpy(procs[nTask].name, names[nTask]);
+	procs[nTask].is_running = 1;
+
+	nTask = 3;
+	// 4. taskChild3 실행
+	if ((c3_pid = fork()) == 0) 
+	{
+		execl("./output/taskChild3", "taskChild3", NULL);
+		perror("execl taskChild3 failed");
+		exit(1);
+	}
+	procs[nTask].pid = c3_pid;
 	strcpy(procs[nTask].name, names[nTask]);
 	procs[nTask].is_running = 1;
 

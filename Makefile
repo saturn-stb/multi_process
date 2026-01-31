@@ -9,7 +9,7 @@ CFLAGS += -march=armv7-a -mfpu=neon  # ARM 전용 최적화 옵션 예시
 endif
 
 # 빌드할 하위 모듈 목록
-SUBDIRS = boss parent child1 child2
+SUBDIRS = boss parent child1 child2 child3
 # 실행 파일이 모일 출력 폴더
 export OUTPUT_DIR = $(CURDIR)/output
 

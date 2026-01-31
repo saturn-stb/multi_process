@@ -105,7 +105,7 @@ static void* recv_thread_func(void* arg)
 	while (1) 
 	{
 		memset(&recv_msg, 0x0, sizeof(struct msg_t));
-		if (msgrcv(msgid, &recv_msg, MSG_SIZE, MSG_RECV_FROM_BOSS, IPC_NOWAIT) != -1)
+		if (msgrcv(msgid, &recv_msg, MSG_SIZE, MSG_RECV_PARENT_FROM_BOSS, IPC_NOWAIT) != -1)
 		{
 			pthread_mutex_lock(&msg_mutex);
 
@@ -153,7 +153,7 @@ static void* send_thread_func(void* arg)
 		{
 			pthread_mutex_lock(&msg_mutex);
 
-			send_msg.id = MSG_SEND_TO_BOSS;
+			send_msg.id = MSG_SEND_PARENT_TO_BOSS;
 			memset(send_msg.text, 0x0, sizeof(send_msg.text));
 			if(child_recv_msg_done & 0x1)
 			{
@@ -168,7 +168,7 @@ static void* send_thread_func(void* arg)
 				}
 			}
 
-			send_msg.id = MSG_SEND_TO_BOSS;
+			send_msg.id = MSG_SEND_PARENT_TO_BOSS;
 			memset(send_msg.text, 0x0, sizeof(send_msg.text));
 			if(child_recv_msg_done & 0x2)
 			{
@@ -209,7 +209,7 @@ static void* child_recv_thread_func(void* arg)
 		// 1. 자식들(Type 10, 20)로부터 ACK 수신
 		// -20을 인자로 주어 10번과 20번 타입을 모두 수집합니다.
 		memset(&recv_msg, 0x0, sizeof(struct msg_t));
-		if (msgrcv(child_msgid, &recv_msg, MSG_SIZE, MSG_RECV_FROM_CHILD1, IPC_NOWAIT) != -1)
+		if (msgrcv(child_msgid, &recv_msg, MSG_SIZE, MSG_RECV_PARENT_FROM_CHILD1, IPC_NOWAIT) != -1)
 		{
 			pthread_mutex_lock(&msg_mutex);
 			printf("\n");
@@ -235,7 +235,7 @@ static void* child_recv_thread_func(void* arg)
 			//usleep(10000); // 10ms
 		}
 
-		if (msgrcv(child_msgid, &recv_msg, MSG_SIZE, MSG_RECV_FROM_CHILD2, IPC_NOWAIT) != -1)
+		if (msgrcv(child_msgid, &recv_msg, MSG_SIZE, MSG_RECV_PARENT_FROM_CHILD2, IPC_NOWAIT) != -1)
 		{
 			pthread_mutex_lock(&msg_mutex);
 			printf("\n");
@@ -282,7 +282,7 @@ static void* child_send_thread_func(void* arg)
 		{
 			pthread_mutex_lock(&msg_mutex);
 
-			send_msg.id = MSG_SEND_TO_CHILD1;
+			send_msg.id = MSG_SEND_PARENT_TO_CHILD1;
 			memset(send_msg.text, 0x0, sizeof(send_msg.text));
 			memcpy(send_msg.text, &_msg_text[0], MSG_SIZE);
 
@@ -292,7 +292,7 @@ static void* child_send_thread_func(void* arg)
 				perror("parent(child1) msgsnd error");
 			}
 
-			send_msg.id = MSG_SEND_TO_CHILD2;
+			send_msg.id = MSG_SEND_PARENT_TO_CHILD2;
 			memset(send_msg.text, 0x0, sizeof(send_msg.text));
 			memcpy(send_msg.text, &_msg_text[0], MSG_SIZE);
 			reverse_string(send_msg.text);
