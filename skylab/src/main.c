@@ -29,6 +29,7 @@
 #include <semaphore.h>
 
 #include "msg_def.h"
+#include "util.h"
 
 /******************************************************************************
 *
@@ -40,7 +41,7 @@
 *
 *
 *---------------------------------------------------------------------------*/
-#define MAX_TASK 4 // except taskMain, taskParent, taskChild1, taskChild2, taskChild3
+#define MAX_TASK 4 // except SKYLAB, taskParent, taskChild1, taskChild2, taskChild3
 
 /*-----------------------------------------------------------------------------
 *
@@ -82,7 +83,7 @@ static ProcInfo procs[MAX_TASK]; // taskParent, taskChild1, taskChild2, taskChil
 *---------------------------------------------------------------------------*/
 void print_help(void) 
 {
-	printf("--- Control Commands ---\n" 
+	Print("--- Control Commands ---\n" 
 			"1. pause  [taskParent/taskChild1/taskChild2/taskChild3]\n"
 			"2. resume [taskParent/taskChild1/taskChild2/taskChild3]\n"
 			"4. status\n"
@@ -99,13 +100,13 @@ void print_help(void)
 void print_status(void) 
 {
 	int i = 0;
-	printf("\n--- Process Status Report ---\n");
+	Print("\n--- Process Status Report ---\n");
 	for (i = 0; i < MAX_TASK; i++) 
 	{
-		printf("Name: %-10s | PID: %-6d | Status: %s\n", 
+		Print("Name: %-10s | PID: %-6d | Status: %s\n", 
 				procs[i].name, procs[i].pid, procs[i].is_running ? "RUNNING" : "PAUSED");
 	}
-	printf("-----------------------------\n");
+	Print("-----------------------------\n");
 }
 
 /*-----------------------------------------------------------------------------
@@ -125,7 +126,7 @@ void control_process(const char* command, const char* target)
 
 	if (target_pid == 0) 
 	{
-		printf("[Main] Unknown target: %s\n", target);
+		Print("[Main] Unknown target: %s\n", target);
 		return;
 	}
 
@@ -137,13 +138,13 @@ void control_process(const char* command, const char* target)
 			{
 				kill(target_pid, SIGSTOP);
 				procs[i].is_running = 0;
-				printf("[Main] %s PAUSED\n", target);
+				Print("[Main] %s PAUSED\n", target);
 			} 
 			else if (strcmp(command, "resume") == 0) 
 			{
 				kill(procs[i].pid, SIGCONT);
 				procs[i].is_running = 1;
-				printf("[Main] %s RESUMED\n", target);
+				Print("[Main] %s RESUMED\n", target);
 			}
 		}
 	}
@@ -157,7 +158,7 @@ void control_process(const char* command, const char* target)
 void cleanup_and_exit(int sig) 
 {
 	(void)sig;
-	printf("\n[Main] Terminating all processes...\n");
+	Print("\n[Main] Terminating all processes...\n");
 	kill(p_pid, SIGKILL); 
 	kill(c1_pid, SIGKILL); 
 	kill(c2_pid, SIGKILL);
@@ -177,11 +178,9 @@ void* send_thread_func(void* arg)
 
 	(void)arg;
 
-	//printf("[Main-Send] Enter commands to send to Parent:\n");
-
 	while (1) 
 	{
-		printf("Command > ");
+		Print("Command > ");
 		fflush(stdout);
 
 		// 1. 입력 버퍼 초기화 (쓰레기 값 방지)
@@ -246,7 +245,7 @@ void* send_thread_func(void* arg)
 				// Queue Full 체크
 				if (((shm_Queue->head + 1) % QUEUE_SIZE) == shm_Queue->tail) 
 				{
-					printf("[MAIN-SEND] Queue Full! Dropping.\n");
+					Print("\n[SKYLAB-SEND] Queue Full, waiting...\n");
 					sem_post(sem_mutex);
 					continue;
 				}
@@ -254,11 +253,11 @@ void* send_thread_func(void* arg)
 				// 데이터 쓰기
 	            int pos = shm_Queue->head;
 				shm_Queue->jobs[pos].proc = PROC_ID_PARENT;
-				shm_Queue->jobs[pos].from_proc = PROC_ID_MAIN;
+				shm_Queue->jobs[pos].from_proc = PROC_ID_SKYLAB;
 				memcpy(shm_Queue->jobs[pos].data, input, MSG_SIZE);
 				shm_Queue->head = (pos + 1) % QUEUE_SIZE;
 				
-				printf("[MAIN-SEND] %d Queued: %s\n", getpid(), input);
+				Print("\n[SKYLAB-SEND] %d Queued: %s\n", getpid(), input);
 
 				sem_post(sem_mutex);
 				sem_post(sem_m2p); // Parent에게 알림
@@ -298,6 +297,7 @@ void* recv_thread_func(void* arg)
             // 3. 큐가 비어있는지 확인
 	        if (shm_Queue->head == shm_Queue->tail) 
 			{
+				Print("\n[SKYLAB-RECV] Queue Full! Dropping.\n");
 	            sem_post(sem_mutex);
 	            continue;
 	        }
@@ -305,16 +305,16 @@ void* recv_thread_func(void* arg)
 			// 4. My 메시지 인지 확인
 			int proc_id = shm_Queue->jobs[shm_Queue->tail].proc;
 			int from_proc_id = shm_Queue->jobs[shm_Queue->tail].from_proc;
-			if((proc_id != PROC_ID_MAIN) || (from_proc_id != PROC_ID_PARENT))
+			if((proc_id != PROC_ID_SKYLAB) || (from_proc_id != PROC_ID_PARENT))
 			{
-				//printf("[MAIN-RECV] ID not mismatch!!! (0x%02x)\n", proc_id);
+				Print("\n[SKYLAB-RECV] ID mismatch!!! (0x%02x)\n", proc_id);
 
 				// 내 메시지가 아닌 경우: 락을 풀고 세마포어를 다시 올려서 다른 프로세스가 보게 함
 	            sem_post(sem_mutex);
 				sem_post(sem_m2p);
 
-				// CPU 점유율 과다 방지를 위한 미세 대기 (Spin 방지)
-				usleep(100);
+				// CPU 점유율 과다 방지를 위한 미세 대기 (Spin-lock 방지)
+				DelayUs(100);
 	            continue;
 			}
 
@@ -323,7 +323,7 @@ void* recv_thread_func(void* arg)
 	        shm_Queue->tail = (pos + 1) % QUEUE_SIZE;
 
 	        memcpy(msg_data, shm_Queue->jobs[pos].data, MSG_SIZE);
-	        printf("\n[MAIN-RECV] Result: %s\n", msg_data);
+	        Print("\n[SKYLAB-RECV] Result: %s\n", msg_data);
 
 	        sem_post(sem_mutex);
 		}
@@ -435,7 +435,7 @@ int main(void)
 	strcpy(procs[nTask].name, names[nTask]);
 	procs[nTask].is_running = 1;
 
-	prctl(PR_SET_NAME, "taskMain");
+	prctl(PR_SET_NAME, "SKYLAB");
 	print_help();
 
 	// 송수신 각각을 담당할 스레드 생성
@@ -451,7 +451,7 @@ int main(void)
 		return 1;
 	}
 
-	//printf("[taskMain] Multi-threaded relay started.\n");
+	//Print("[SKYLAB] Multi-threaded relay started.\n");
 
 	// 스레드가 종료될 때까지 대기
 	pthread_join(send_tid, NULL);

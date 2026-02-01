@@ -37,7 +37,7 @@
 #define SEM_MUTEX 	"/sem_mutex"
 
 
-#define PROC_ID_MAIN 	0x1
+#define PROC_ID_SKYLAB 	0x1
 #define PROC_ID_PARENT 	0x2
 #define PROC_ID_CHILD1 	0x4
 #define PROC_ID_CHILD2 	0x8

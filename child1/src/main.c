@@ -27,6 +27,7 @@
 #include <semaphore.h>
 
 #include "msg_def.h"
+#include "util.h"
 
 /******************************************************************************
 *
@@ -114,7 +115,7 @@ static void* recv_thread_func(void* arg)
             // 3. 큐가 비어있는지 확인
             if (shm_Queue->head == shm_Queue->tail) 
             {
-				printf("[PARENT-RECV] Queue empty!!!\n");
+				Print("\n[CHILD1-RECV] Queue Full! Dropping.\n");
                 sem_post(sem_mutex);
                 continue;
             }
@@ -124,13 +125,13 @@ static void* recv_thread_func(void* arg)
             int from_proc_id = shm_Queue->jobs[shm_Queue->tail].from_proc;
 			if((proc_id != PROC_ID_CHILD1) || (from_proc_id != PROC_ID_PARENT))
 			{
-				printf("[CHILD1-RECV] ID not mismatch!!! (0x%02x)\n", proc_id);
+				Print("\n[CHILD1-RECV] ID mismatch!!! (0x%02x)\n", proc_id);
 				
 				// 내 메시지가 아닌 경우: 락을 풀고 세마포어를 다시 올려서 다른 프로세스가 보게 함
 	            sem_post(sem_mutex);
 				sem_post(sem_m2p);
 				
-				// CPU 점유율 과다 방지를 위한 미세 대기 (Spin 방지)
+				// CPU 점유율 과다 방지를 위한 미세 대기 (Spin-lock 방지)
 				usleep(100);
 	            continue;
 			}
@@ -140,7 +141,7 @@ static void* recv_thread_func(void* arg)
 			shm_Queue->tail = (pos + 1) % QUEUE_SIZE;
 			
 	        memcpy(msg_data, shm_Queue->jobs[pos].data, MSG_SIZE);
-			printf("[CHILD1-RECV] Message from PARENT : %s\n", msg_data);
+			Print("\n[CHILD1-RECV] Message from PARENT : %s\n", msg_data);
 			
 			sem_post(sem_mutex);
 			
@@ -186,7 +187,7 @@ static void* send_thread_func(void* arg)
 	        // Queue Full 체크
 	        if (((shm_Queue->head + 1) % QUEUE_SIZE) == shm_Queue->tail) 
 	        {
-	            printf("[CHILD1-SEND] Queue Full, waiting...\n");
+	            Print("\n[CHILD1-SEND] Queue Full, waiting...\n");
 	            sem_post(sem_mutex);
 	            usleep(50000);
 	            continue;
@@ -202,7 +203,7 @@ static void* send_thread_func(void* arg)
 			memcpy(shm_Queue->jobs[pos].data, msg_data, MSG_SIZE);
 			shm_Queue->head = (pos + 1) % QUEUE_SIZE;
 
-			printf("[CHILD1-SEND] Message to CHILD2 : %s\n", msg_data);
+			Print("\n[CHILD1-SEND] Message to CHILD2 : %s\n", msg_data);
 #else
             int pos = shm_Queue->head;
 			shm_Queue->jobs[pos].proc = PROC_ID_PARENT;
@@ -210,7 +211,7 @@ static void* send_thread_func(void* arg)
 	        memcpy(shm_Queue->jobs[pos].data, msg_data, MSG_SIZE);
 	        shm_Queue->head = (pos + 1) % QUEUE_SIZE;
 	        
-	        printf("[CHILD1-SEND] Message to PARENT : %s\n", msg_data);
+	        Print("\n[CHILD1-SEND] Message to PARENT : %s\n", msg_data);
 #endif
 	        work_done = 0; // 플래그 리셋
 	        sem_post(sem_mutex);

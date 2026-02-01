@@ -28,6 +28,7 @@
 #include <semaphore.h>
 
 #include "msg_def.h"
+#include "util.h"
 
 /******************************************************************************
 *
@@ -65,7 +66,7 @@ static int work_done = 0;
 static int child_work_done = 0;
 static int child_recv_msg_done = 0x0; // 0x0:not received all message, 0x1:received messsage by child1, 0x2:received messsage by child2 
 
-static unsigned char _msg_text[3][MSG_SIZE]; // 0:received from taskMain(boss), 1:received from taskChild1, 2:received from taskChild2
+static unsigned char _msg_text[3][MSG_SIZE]; // 0:received from SKYLAB, 1:received from taskChild1, 2:received from taskChild2
 
 /******************************************************************************
 *
@@ -116,7 +117,7 @@ static void* recv_thread_func(void* arg)
             // 3. 큐가 비어있는지 확인
             if (shm_Queue->head == shm_Queue->tail) 
             {
-				printf("[PARENT-RECV] Queue empty!!!\n");
+				printf("\n[PARENT-RECV] Queue Full! Dropping.\n");
                 sem_post(sem_mutex);
                 continue;
             }
@@ -124,14 +125,14 @@ static void* recv_thread_func(void* arg)
 			// 4. My 메시지 인지 확인
             int proc_id = shm_Queue->jobs[shm_Queue->tail].proc;
             int from_proc_id = shm_Queue->jobs[shm_Queue->tail].from_proc;
-			if((proc_id == PROC_ID_PARENT) && (from_proc_id == PROC_ID_MAIN))
+			if((proc_id == PROC_ID_PARENT) && (from_proc_id == PROC_ID_SKYLAB))
 			{
 				// 5. 데이터 읽기 (Consumer: tail 사용)
 				int pos = shm_Queue->tail;
 				shm_Queue->tail = (pos + 1) % QUEUE_SIZE;
 				
 				memcpy(msg_data, shm_Queue->jobs[pos].data, MSG_SIZE);
-				printf("[PARENT-RECV] Message from MAIN : %s\n", msg_data);
+				printf("\n[PARENT-RECV] Message from SKYLAB : %s\n", msg_data);
 				
 				sem_post(sem_mutex);
 				
@@ -147,7 +148,7 @@ static void* recv_thread_func(void* arg)
 				shm_Queue->tail = (pos + 1) % QUEUE_SIZE;
 				
 				memcpy(msg_data, shm_Queue->jobs[pos].data, MSG_SIZE);
-				printf("[PARENT-RECV] Message from CHILD1 : %s\n", msg_data);
+				printf("\n[PARENT-RECV] Message from CHILD1 : %s\n", msg_data);
 				
 				sem_post(sem_mutex);
 				
@@ -163,7 +164,7 @@ static void* recv_thread_func(void* arg)
 				shm_Queue->tail = (pos + 1) % QUEUE_SIZE;
 				
 				memcpy(msg_data, shm_Queue->jobs[pos].data, MSG_SIZE);
-				printf("[PARENT-RECV] Message from CHILD2 : %s\n", msg_data);
+				printf("\n[PARENT-RECV] Message from CHILD2 : %s\n", msg_data);
 				
 				sem_post(sem_mutex);
 				
@@ -174,13 +175,13 @@ static void* recv_thread_func(void* arg)
 			}
 			else
 			{
-				printf("[PARENT-RECV] ID not mismatch!!! (0x%02x)\n", proc_id);
+				printf("\n[PARENT-RECV] ID mismatch!!! (0x%02x)\n", proc_id);
 				
 				// 내 메시지가 아닌 경우: 락을 풀고 세마포어를 다시 올려서 다른 프로세스가 보게 함
 	            sem_post(sem_mutex);
 				sem_post(sem_m2p);
 				
-				// CPU 점유율 과다 방지를 위한 미세 대기 (Spin 방지)
+				// CPU 점유율 과다 방지를 위한 미세 대기 (Spin-lock 방지)
 				usleep(100);
 	            continue;
 			}
@@ -222,7 +223,7 @@ static void* send_thread_func(void* arg)
 	        // Queue Full 체크
 	        if (((shm_Queue->head + 1) % QUEUE_SIZE) == shm_Queue->tail) 
 	        {
-	            printf("[PARENT-SEND] Queue Full, waiting...\n");
+	            printf("\n[PARENT-SEND] Queue Full, waiting...\n");
 	            sem_post(sem_mutex);
 	            usleep(50000);
 	            continue;
@@ -239,7 +240,7 @@ static void* send_thread_func(void* arg)
 		        memcpy(shm_Queue->jobs[pos].data, msg_data, MSG_SIZE);
 		        shm_Queue->head = (pos + 1) % QUEUE_SIZE;
 		        
-		        printf("[PARENT-SEND] message to CHILD1 : %s\n", msg_data);
+		        printf("\n[PARENT-SEND] message to CHILD1 : %s\n", msg_data);
 
 		        work_done = 0; // 플래그 리셋
 		        sem_post(sem_mutex);
@@ -253,12 +254,12 @@ static void* send_thread_func(void* arg)
 				memcpy(msg_data, &_msg_text[1][0], MSG_SIZE);
 
 	            int pos = shm_Queue->head;
-				shm_Queue->jobs[pos].proc = PROC_ID_MAIN;
+				shm_Queue->jobs[pos].proc = PROC_ID_SKYLAB;
 				shm_Queue->jobs[pos].from_proc = PROC_ID_PARENT;
 		        memcpy(shm_Queue->jobs[pos].data, msg_data, MSG_SIZE);
 		        shm_Queue->head = (pos + 1) % QUEUE_SIZE;
 		        
-		        printf("[PARENT-SEND] message to MAIN : %s\n", msg_data);
+		        printf("\n[PARENT-SEND] message to SKYLAB : %s\n", msg_data);
 
 		        work_done = 0; // 플래그 리셋
 		        sem_post(sem_mutex);
@@ -272,12 +273,12 @@ static void* send_thread_func(void* arg)
 				memcpy(msg_data, &_msg_text[2][0], MSG_SIZE);
 
 	            int pos = shm_Queue->head;
-				shm_Queue->jobs[pos].proc = PROC_ID_MAIN;
+				shm_Queue->jobs[pos].proc = PROC_ID_SKYLAB;
 				shm_Queue->jobs[pos].from_proc = PROC_ID_PARENT;
 		        memcpy(shm_Queue->jobs[pos].data, msg_data, MSG_SIZE);
 		        shm_Queue->head = (pos + 1) % QUEUE_SIZE;
 		        
-		        printf("[PARENT-SEND] message to MAIN : %s\n", msg_data);
+		        printf("\n[PARENT-SEND] message to SKYLAB : %s\n", msg_data);
 
 		        work_done = 0; // 플래그 리셋
 		        sem_post(sem_mutex);
@@ -375,7 +376,7 @@ int main(void)
 	//sem_c2p   = sem_open(SEM_C2P, 0);
 
 	pthread_t send_tid, recv_tid;
-	pthread_t send_ch_tid, recv_ch_tid;
+	//pthread_t send_ch_tid, recv_ch_tid;
 
 	// 송수신 각각을 담당할 스레드 생성
 	if (pthread_create(&send_tid, NULL, send_thread_func, NULL) != 0) 
