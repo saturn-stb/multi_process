@@ -8,6 +8,9 @@ ifneq ($(findstring arm,$(CC)),)
 CFLAGS += -march=armv7-a -mfpu=neon  # ARM 전용 최적화 옵션 예시
 endif
 
+LDFLAGS +=
+LDLIBS  += -lrt
+
 CUR_DIR := $(CURDIR)
 
 TARGET = taskParent
@@ -30,7 +33,7 @@ all: $(FINAL_TARGET)
 
 $(FINAL_TARGET): $(OBJS)
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -o $@ $^
+	$(CC) $(CFLAGS) $^ $(LDLIBS) -o $@
 	@echo "[Done] $(TARGET) build complete."
 
 $(OBJ_DIR)/%.o: %.c
@@ -41,7 +44,7 @@ $(OBJ_DIR)/%.o: %.c
 	@echo "========================================"
 	@mkdir -p $(dir $@)
 	@echo "  Compiling: $< -> $@"
-	$(CC) $(CFLAGS) $(INC_FLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) $(LDFLAGS) $(INC_FLAGS) -c $< -o $@
 
 # 2. 생성된 의존성 파일들을 Makefile에 포함
 # 파일이 없어도 에러가 나지 않도록 '-'를 붙입니다.

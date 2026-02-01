@@ -4,9 +4,13 @@
 CC ?= gcc
 export CC  # 하위 Makefile들로 컴파일러 정보를 전달
 
+LDFLAGS +=
 ifneq ($(findstring arm,$(CC)),)
 CFLAGS += -march=armv7-a -mfpu=neon  # ARM 전용 최적화 옵션 예시
 endif
+
+LDFLAGS +=
+LDLIBS  +=
 
 # 빌드할 하위 모듈 목록
 SUBDIRS = boss parent child1 child2 child3

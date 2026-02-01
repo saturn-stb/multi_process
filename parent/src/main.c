@@ -23,6 +23,9 @@
 #include <time.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>		 /* For mode constants */
+#include <semaphore.h>
 
 #include "msg_def.h"
 
@@ -48,17 +51,21 @@
 *
 *
 *---------------------------------------------------------------------------*/
-static pthread_mutex_t msg_mutex;
-static pthread_mutex_t child_msg_mutex;
+static int shm_fd = -1;
+static ShmQueue *shm_Queue = NULL;
+static sem_t *sem_m2p = NULL; // Main to Parent
+static sem_t *sem_p2m = NULL; // Parent to Main
+static sem_t *sem_mutex = NULL;
 
-static int msgid;
+static sem_t *sem_p2c = NULL;
+static sem_t *sem_c2p = NULL;
+
 static int work_done = 0;
 
-static int child_msgid;
 static int child_work_done = 0;
 static int child_recv_msg_done = 0x0; // 0x0:not received all message, 0x1:received messsage by child1, 0x2:received messsage by child2 
 
-static char _msg_text[3][MSG_SIZE]; // 0:received from taskMain(boss), 1:received from taskChild1, 2:received from taskChild2
+static unsigned char _msg_text[3][MSG_SIZE]; // 0:received from taskMain(boss), 1:received from taskChild1, 2:received from taskChild2
 
 /******************************************************************************
 *
@@ -91,40 +98,98 @@ static void reverse_string(char* str)
 *---------------------------------------------------------------------------*/
 static void* recv_thread_func(void* arg)
 {
-	struct msg_t recv_msg;
+	unsigned char msg_data[MSG_SIZE];
 
 	(void)arg;
 
 	while (1) 
 	{
-		memset(&recv_msg, 0x0, sizeof(struct msg_t));
-		if (msgrcv(msgid, &recv_msg, MSG_SIZE, MSG_RECV_PARENT_FROM_BOSS, IPC_NOWAIT) != -1)
-		{
-			pthread_mutex_lock(&msg_mutex);
+		memset(msg_data, 0, MSG_SIZE);
 
-			printf("\n");
-			printf("\n");
-			printf("[Parent-Recv] Received from Boss : %s\n", recv_msg.text);
+        // 1. 부모로부터의 신호 대기 (이게 먼저 와야 함)
+        sem_wait(sem_m2p);
+        // 2. 임계 구역 진입
+        sem_wait(sem_mutex);
+		
+        if (shm_Queue != NULL) 
+        {
+            // 3. 큐가 비어있는지 확인
+            if (shm_Queue->head == shm_Queue->tail) 
+            {
+				printf("[PARENT-RECV] Queue empty!!!\n");
+                sem_post(sem_mutex);
+                continue;
+            }
 
-			memset(&_msg_text[0], 0x0, MSG_SIZE);
-			memcpy(&_msg_text[0], recv_msg.text, strlen(recv_msg.text));
-
-			//work_done = 1;
-			child_work_done = 1;
-			pthread_mutex_unlock(&msg_mutex);
-		}
-		else
-		{
-			if (errno != ENOMSG) 
+			// 4. My 메시지 인지 확인
+            int proc_id = shm_Queue->jobs[shm_Queue->tail].proc;
+            int from_proc_id = shm_Queue->jobs[shm_Queue->tail].from_proc;
+			if((proc_id == PROC_ID_PARENT) && (from_proc_id == PROC_ID_MAIN))
 			{
-				perror("parent msgrcv error");
-				break;
+				// 5. 데이터 읽기 (Consumer: tail 사용)
+				int pos = shm_Queue->tail;
+				shm_Queue->tail = (pos + 1) % QUEUE_SIZE;
+				
+				memcpy(msg_data, shm_Queue->jobs[pos].data, MSG_SIZE);
+				printf("[PARENT-RECV] Message from MAIN : %s\n", msg_data);
+				
+				sem_post(sem_mutex);
+				
+				// 6. 수신 데이터 저장 및 처리
+				memcpy(&_msg_text[0][0], msg_data, MSG_SIZE);
+				
+				work_done = 1; 
 			}
-
-			// 큐에 메시지가 없는 경우: CPU 점유율을 위해 아주 짧게 휴식
-			//usleep(10000); // 10ms
-		}
-	}
+			else if((proc_id == PROC_ID_PARENT) && (from_proc_id == PROC_ID_CHILD1))
+			{
+				// 5. 데이터 읽기 (Consumer: tail 사용)
+				int pos = shm_Queue->tail;
+				shm_Queue->tail = (pos + 1) % QUEUE_SIZE;
+				
+				memcpy(msg_data, shm_Queue->jobs[pos].data, MSG_SIZE);
+				printf("[PARENT-RECV] Message from CHILD1 : %s\n", msg_data);
+				
+				sem_post(sem_mutex);
+				
+				// 6. 수신 데이터 저장 및 처리
+				memcpy(&_msg_text[1][0], msg_data, MSG_SIZE);
+				
+				work_done = 2; 
+			}
+			else if((proc_id == PROC_ID_PARENT) && (from_proc_id == PROC_ID_CHILD2))
+			{
+				// 5. 데이터 읽기 (Consumer: tail 사용)
+				int pos = shm_Queue->tail;
+				shm_Queue->tail = (pos + 1) % QUEUE_SIZE;
+				
+				memcpy(msg_data, shm_Queue->jobs[pos].data, MSG_SIZE);
+				printf("[PARENT-RECV] Message from CHILD2 : %s\n", msg_data);
+				
+				sem_post(sem_mutex);
+				
+				// 6. 수신 데이터 저장 및 처리
+				memcpy(&_msg_text[2][0], msg_data, MSG_SIZE);
+				
+				work_done = 3; 
+			}
+			else
+			{
+				printf("[PARENT-RECV] ID not mismatch!!! (0x%02x)\n", proc_id);
+				
+				// 내 메시지가 아닌 경우: 락을 풀고 세마포어를 다시 올려서 다른 프로세스가 보게 함
+	            sem_post(sem_mutex);
+				sem_post(sem_m2p);
+				
+				// CPU 점유율 과다 방지를 위한 미세 대기 (Spin 방지)
+				usleep(100);
+	            continue;
+			}
+        }
+        else 
+        {
+            sem_post(sem_mutex);
+        }
+    }
 
 	return NULL;
 }
@@ -136,56 +201,107 @@ static void* recv_thread_func(void* arg)
 *---------------------------------------------------------------------------*/
 static void* send_thread_func(void* arg)
 {
-	struct msg_t send_msg;
+	unsigned char msg_data[MSG_SIZE];
 
 	(void)arg;
 
 	while (1) 
 	{
-		if (work_done) 
+		memset(msg_data, 0x0, sizeof(msg_data));
+		
+        // work_done이 1이 될 때까지 대기 (Busy-wait 방지를 위한 usleep)
+        if (!work_done) 
+        {
+            usleep(10000); // 10ms
+            continue;
+        }
+
+        sem_wait(sem_mutex);
+        if (shm_Queue != NULL) 
+        {
+	        // Queue Full 체크
+	        if (((shm_Queue->head + 1) % QUEUE_SIZE) == shm_Queue->tail) 
+	        {
+	            printf("[PARENT-SEND] Queue Full, waiting...\n");
+	            sem_post(sem_mutex);
+	            usleep(50000);
+	            continue;
+	        }
+
+			if(work_done == 1)
+			{
+		        // 데이터 복사 (처리 결과 전송)
+				memcpy(msg_data, &_msg_text[0][0], MSG_SIZE);
+
+	            int pos = shm_Queue->head;
+				shm_Queue->jobs[pos].proc = PROC_ID_CHILD1;
+				shm_Queue->jobs[pos].from_proc = PROC_ID_PARENT;
+		        memcpy(shm_Queue->jobs[pos].data, msg_data, MSG_SIZE);
+		        shm_Queue->head = (pos + 1) % QUEUE_SIZE;
+		        
+		        printf("[PARENT-SEND] message to CHILD1 : %s\n", msg_data);
+
+		        work_done = 0; // 플래그 리셋
+		        sem_post(sem_mutex);
+		        
+		        // taskMain의 수신 스레드에게 신호 전송
+		        sem_post(sem_p2m); 
+			}
+			else if(work_done == 2)
+			{
+		        // 데이터 복사 (처리 결과 전송)
+				memcpy(msg_data, &_msg_text[1][0], MSG_SIZE);
+
+	            int pos = shm_Queue->head;
+				shm_Queue->jobs[pos].proc = PROC_ID_MAIN;
+				shm_Queue->jobs[pos].from_proc = PROC_ID_PARENT;
+		        memcpy(shm_Queue->jobs[pos].data, msg_data, MSG_SIZE);
+		        shm_Queue->head = (pos + 1) % QUEUE_SIZE;
+		        
+		        printf("[PARENT-SEND] message to MAIN : %s\n", msg_data);
+
+		        work_done = 0; // 플래그 리셋
+		        sem_post(sem_mutex);
+		        
+		        // taskMain의 수신 스레드에게 신호 전송
+		        sem_post(sem_p2m); 
+			}
+			else if(work_done == 3)
+			{
+		        // 데이터 복사 (처리 결과 전송)
+				memcpy(msg_data, &_msg_text[2][0], MSG_SIZE);
+
+	            int pos = shm_Queue->head;
+				shm_Queue->jobs[pos].proc = PROC_ID_MAIN;
+				shm_Queue->jobs[pos].from_proc = PROC_ID_PARENT;
+		        memcpy(shm_Queue->jobs[pos].data, msg_data, MSG_SIZE);
+		        shm_Queue->head = (pos + 1) % QUEUE_SIZE;
+		        
+		        printf("[PARENT-SEND] message to MAIN : %s\n", msg_data);
+
+		        work_done = 0; // 플래그 리셋
+		        sem_post(sem_mutex);
+		        
+		        // taskMain의 수신 스레드에게 신호 전송
+		        sem_post(sem_p2m); 
+			}
+			else
+			{
+		        work_done = 0; // 플래그 리셋
+				sem_post(sem_mutex);
+			}
+        }
+		else
 		{
-			pthread_mutex_lock(&msg_mutex);
-
-			send_msg.id = MSG_SEND_PARENT_TO_BOSS;
-			memset(send_msg.text, 0x0, sizeof(send_msg.text));
-			if(child_recv_msg_done & 0x1)
-			{
-				send_msg.sub_id = 0x1;
-				memcpy(send_msg.text, &_msg_text[1], MSG_SIZE);
-				child_recv_msg_done &= ~(0x1);
-				printf("[Parent-Send] Sent to Boss : child1 message [ %s ]\n", send_msg.text);
-
-				if (msgsnd(msgid, &send_msg, MSG_SIZE, 0) == -1)
-				{
-					perror("parent msgsnd error");
-				}
-			}
-
-			send_msg.id = MSG_SEND_PARENT_TO_BOSS;
-			memset(send_msg.text, 0x0, sizeof(send_msg.text));
-			if(child_recv_msg_done & 0x2)
-			{
-				send_msg.sub_id = 0x2;
-				memcpy(send_msg.text, &_msg_text[2], MSG_SIZE);
-				child_recv_msg_done &= ~(0x2);
-				printf("[Parent-Send] Sent to Boss : child2 message [ %s ]\n", send_msg.text);
-
-				if (msgsnd(msgid, &send_msg, MSG_SIZE, 0) == -1) 
-				{
-					perror("parent msgsnd error");
-				}
-			}
-
 			work_done = 0; // 플래그 리셋
-			pthread_mutex_unlock(&msg_mutex);
+            sem_post(sem_mutex);
 		}
-
-		//usleep(100000); // 0.1초 간격 폴링
-	}
+    }
 
 	return NULL;
 }
 
+#if 0
 /*-----------------------------------------------------------------------------
 *
 *
@@ -193,66 +309,13 @@ static void* send_thread_func(void* arg)
 *---------------------------------------------------------------------------*/
 static void* child_recv_thread_func(void* arg)
 {
-	struct msg_t recv_msg;
-
 	(void)arg;
 
 	while (1) 
 	{
-		// 1. 자식들(Type 10, 20)로부터 ACK 수신
-		// -20을 인자로 주어 10번과 20번 타입을 모두 수집합니다.
-		memset(&recv_msg, 0x0, sizeof(struct msg_t));
-		if (msgrcv(child_msgid, &recv_msg, MSG_SIZE, MSG_RECV_PARENT_FROM_CHILD1, IPC_NOWAIT) != -1)
-		{
-			pthread_mutex_lock(&msg_mutex);
-			printf("\n");
-			printf("[Parent-Recv] Received from child%ld : %s\n", recv_msg.id/10, recv_msg.text);
-
-			memset(&_msg_text[1], 0x0, MSG_SIZE);
-			memcpy(&_msg_text[1], recv_msg.text, MSG_SIZE);
-
-			work_done = 1;
-			//child_work_done = 1; 
-			child_recv_msg_done |= 0x1;
-			pthread_mutex_unlock(&msg_mutex);
-		}
-		else
-		{
-			if (errno != ENOMSG) 
-			{
-				perror("parent(child1) msgrcv error");
-				break;
-			}
-
-			// 큐에 메시지가 없는 경우: CPU 점유율을 위해 아주 짧게 휴식
-			//usleep(10000); // 10ms
-		}
-
-		if (msgrcv(child_msgid, &recv_msg, MSG_SIZE, MSG_RECV_PARENT_FROM_CHILD2, IPC_NOWAIT) != -1)
-		{
-			pthread_mutex_lock(&msg_mutex);
-			printf("\n");
-			printf("[Parent-Recv] Received from child%ld : %s\n", recv_msg.id/10, recv_msg.text);
-
-			memset(&_msg_text[2], 0x0, MSG_SIZE);
-			memcpy(&_msg_text[2], recv_msg.text, MSG_SIZE);
-
-			work_done = 1;
-			//child_work_done = 1; 
-			child_recv_msg_done |= 0x2;
-			pthread_mutex_unlock(&msg_mutex);
-		}
-		else
-		{
-			if (errno != ENOMSG) 
-			{
-				perror("parent(child2) msgrcv error");
-				break;
-			}
-
-			// 큐에 메시지가 없는 경우: CPU 점유율을 위해 아주 짧게 휴식
-			//usleep(10000); // 10ms
-		}
+		//work_done = 1;
+		//child_work_done = 1; 
+		child_recv_msg_done |= 0x1;
 	}
 
 	return NULL;
@@ -265,46 +328,19 @@ static void* child_recv_thread_func(void* arg)
 *---------------------------------------------------------------------------*/
 static void* child_send_thread_func(void* arg)
 {
-	struct msg_t send_msg;
-
 	(void)arg;
 
 	while (1)
 	{
 		if (child_work_done)
 		{
-			pthread_mutex_lock(&msg_mutex);
-
-			send_msg.id = MSG_SEND_PARENT_TO_CHILD1;
-			memset(send_msg.text, 0x0, sizeof(send_msg.text));
-			memcpy(send_msg.text, &_msg_text[0], MSG_SIZE);
-
-			printf("[Parent-Send] Sent to Child1 : %s\n", send_msg.text);
-			if (msgsnd(child_msgid, &send_msg, MSG_SIZE, 0) == -1)
-			{
-				perror("parent(child1) msgsnd error");
-			}
-
-			send_msg.id = MSG_SEND_PARENT_TO_CHILD2;
-			memset(send_msg.text, 0x0, sizeof(send_msg.text));
-			memcpy(send_msg.text, &_msg_text[0], MSG_SIZE);
-			reverse_string(send_msg.text);
-
-			printf("[Parent-Send] Sent to Child2 : %s\n", send_msg.text);
-			if (msgsnd(child_msgid, &send_msg, MSG_SIZE, 0) == -1) 
-			{
-				perror("parent(child2) msgsnd error");
-			}
-
-			pthread_mutex_unlock(&msg_mutex);
 			child_work_done = 0; // 플래그 리셋
 		}
-
-		//usleep(100000); // 0.1초 간격 폴링
 	}
 
 	return NULL;
 }
+#endif
 
 /*-----------------------------------------------------------------------------
 *
@@ -313,33 +349,30 @@ static void* child_send_thread_func(void* arg)
 *---------------------------------------------------------------------------*/
 int main(void)
 {
-	creat("progfile_child", 0644);
-
 	prctl(PR_SET_NAME, "taskParent");
 
-	key_t key = ftok("progfile", 65);
-	msgid = msgget(key, 0666 | IPC_CREAT);
-
-	key_t child_key = ftok("progfile_child", 66);
-	child_msgid = msgget(child_key, 0666 | IPC_CREAT);
-
-	if (key == -1 || child_key == -1)
+	// 공유 메모리 연결
+	shm_fd = shm_open(SHM_NAME, O_RDWR, 0666);
+	if (shm_fd == -1)
 	{
-		perror("ftok failed - check if files exist");
-		exit(1);
-	}
-
-	if (pthread_mutex_init(&msg_mutex, NULL) != 0) 
-	{
-		perror("Mutex init failed");
+		perror("shm_open failed");
 		return 1;
 	}
 
-	if (pthread_mutex_init(&child_msg_mutex, NULL) != 0)
+	shm_Queue = mmap(NULL, sizeof(ShmQueue), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+	if (shm_Queue == MAP_FAILED)
 	{
-		perror("Mutex init failed");
+		perror("mmap failed");
 		return 1;
 	}
+
+	// 세마포어 연결
+	sem_m2p   = sem_open(SEM_M2P, 0);
+	sem_p2m   = sem_open(SEM_P2M, 0);
+	sem_mutex = sem_open(SEM_MUTEX, 0);
+
+	//sem_p2c   = sem_open(SEM_P2C, 0);
+	//sem_c2p   = sem_open(SEM_C2P, 0);
 
 	pthread_t send_tid, recv_tid;
 	pthread_t send_ch_tid, recv_ch_tid;
@@ -357,6 +390,7 @@ int main(void)
 		return 1;
 	}
 
+#if 0
 	// 송수신 각각을 담당할 스레드 생성
 	if (pthread_create(&send_ch_tid, NULL, child_send_thread_func, NULL) != 0)
 	{
@@ -369,14 +403,17 @@ int main(void)
 		perror("Failed to create upstream recv thread");
 		return 1;
 	}
+#endif
 
 	//printf("[taskParent] Multi-threaded relay started.\n");
 
 	pthread_join(send_tid, NULL);
 	pthread_join(recv_tid, NULL);
 
+#if 0
 	pthread_join(send_ch_tid, NULL);
 	pthread_join(recv_ch_tid, NULL);
+#endif
 
 	while (1) 
 	{

@@ -25,69 +25,45 @@
 *
 *
 *---------------------------------------------------------------------------*/
-#define MSG_SIZE 64
+#define MSG_SIZE 	52
+#define QUEUE_SIZE 	4
 
-/* BOSS */
-// taskMain <==> taskParent
-#define MSG_SEND_BOSS_TO_PARENT 		1
-#define MSG_RECV_BOSS_FROM_PARENT 		30
-// taskParent <==> taskMain
-#define MSG_SEND_PARENT_TO_BOSS 		30
-#define MSG_RECV_PARENT_FROM_BOSS 		1
+#define SHM_NAME 	"/mp_shm"
 
-
-/* PARENT */
-// taskParent <==> taskChild1
-#define MSG_SEND_PARENT_TO_CHILD1 		2
-#define MSG_RECV_PARENT_FROM_CHILD1		10
-// taskChild1 <==> taskParent
-#define MSG_SEND_CHILD1_TO_PARENT 		10
-#define MSG_RECV_CHILD1_FROM_PARENT 	2
-
-// taskParent <==> taskChild2
-#define MSG_SEND_PARENT_TO_CHILD2 		3
-#define MSG_RECV_PARENT_FROM_CHILD2 	20
-// taskChild2 <==> taskParent
-#define MSG_SEND_CHILD2_TO_PARENT 		20
-#define MSG_RECV_CHILD2_FROM_PARENT 	3
+#define SEM_M2P   	"/sem_m2p"
+#define SEM_P2M   	"/sem_p2m"
+#define SEM_P2C   	"/sem_p2c"
+#define SEM_C2P   	"/sem_c2p"
+#define SEM_MUTEX 	"/sem_mutex"
 
 
-/* CHILD */
-// taskChild1 <==> taskChild2
-#define MSG_SEND_CHILD1_TO_CHILD2 		100
-#define MSG_RECV_CHILD1_FROM_CHILD2 	200
-// taskChild2 <==> taskChild1
-#define MSG_SEND_CHILD2_TO_CHILD1 		200
-#define MSG_RECV_CHILD2_FROM_CHILD1 	100
+#define PROC_ID_MAIN 	0x1
+#define PROC_ID_PARENT 	0x2
+#define PROC_ID_CHILD1 	0x4
+#define PROC_ID_CHILD2 	0x8
+#define PROC_ID_CHILD3 	0x10
 
-
-// taskChild1 <==> taskChild3
-#define MSG_SEND_CHILD1_TO_CHILD3 		101
-#define MSG_RECV_CHILD1_FROM_CHILD3 	201
-// taskChild3 <==> taskChild1
-#define MSG_SEND_CHILD3_TO_CHILD1 		201
-#define MSG_RECV_CHILD3_FROM_CHILD1 	101
-
-
-// taskChild2 <==> taskChild3
-#define MSG_SEND_CHILD2_TO_CHILD3 		102
-#define MSG_RECV_CHILD2_FROM_CHILD3 	202
-// taskChild3 <==> taskChild2
-#define MSG_SEND_CHILD3_TO_CHILD2 		202
-#define MSG_RECV_CHILD3_FROM_CHILD2 	102
 
 /*-----------------------------------------------------------------------------
 *
 *
 *
 *---------------------------------------------------------------------------*/
-struct msg_t 
+typedef struct 
 {
-	long id;
-	long sub_id;
-	char text[MSG_SIZE];
-};
+	int proc; // 4bytes
+	int from_proc; // 4bytes
+	unsigned char data[MSG_SIZE]; // 48bytes
 
+} Job;
+
+typedef struct
+{
+	int head; // 4bytes
+	int tail; // 4bytes
+	Job jobs[QUEUE_SIZE]; // 52bytes
+
+} ShmQueue; // 64bytes
 
 /*-----------------------------------------------------------------------------
 *

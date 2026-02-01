@@ -24,6 +24,9 @@
 #include <signal.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>		 /* For mode constants */
+#include <semaphore.h>
 
 #include "msg_def.h"
 
@@ -58,12 +61,14 @@ typedef struct
 *
 *
 *---------------------------------------------------------------------------*/
-static pthread_mutex_t msg_mutex;
+static int shm_fd = -1;
+static ShmQueue *shm_Queue = NULL;
+static sem_t *sem_m2p = NULL;
+static sem_t *sem_p2m = NULL;
+static sem_t *sem_mutex = NULL;
 
 static pid_t p_pid, c1_pid, c2_pid, c3_pid;
-static int msgid;
-
-ProcInfo procs[MAX_TASK]; // taskParent, taskChild1, taskChild2, taskChild3
+static ProcInfo procs[MAX_TASK]; // taskParent, taskChild1, taskChild2, taskChild3
 
 /******************************************************************************
 *
@@ -157,7 +162,6 @@ void cleanup_and_exit(int sig)
 	kill(c1_pid, SIGKILL); 
 	kill(c2_pid, SIGKILL);
 	kill(c3_pid, SIGKILL);
-	msgctl(msgid, IPC_RMID, NULL);
 	exit(0);
 }
 
@@ -169,11 +173,11 @@ void cleanup_and_exit(int sig)
 void* send_thread_func(void* arg)
 {
 	char input[MSG_SIZE];
-	struct msg_t send_msg;
+	unsigned char msg_data[MSG_SIZE];
 
 	(void)arg;
 
-	printf("[Main-Send] Enter commands to send to Parent:\n");
+	//printf("[Main-Send] Enter commands to send to Parent:\n");
 
 	while (1) 
 	{
@@ -182,7 +186,7 @@ void* send_thread_func(void* arg)
 
 		// 1. 입력 버퍼 초기화 (쓰레기 값 방지)
 		memset(input, 0, MSG_SIZE);
-		memset(send_msg.text, 0, MSG_SIZE);		
+		memset(msg_data, 0, MSG_SIZE);		
 
 		if (fgets(input, MSG_SIZE, stdin) != NULL) 
 		{
@@ -234,18 +238,35 @@ void* send_thread_func(void* arg)
 				continue;
 			}
 
-			pthread_mutex_lock(&msg_mutex);
+			// --- 공유 메모리 작업 시작 ---
+			sem_wait(sem_mutex);
 
-			// 3. 일반 메시지 전송
-			send_msg.id = MSG_SEND_BOSS_TO_PARENT; // Parent행 메시지 타입
-			strcpy(send_msg.text, input);
+			if(shm_Queue != NULL)
+			{			
+				// Queue Full 체크
+				if (((shm_Queue->head + 1) % QUEUE_SIZE) == shm_Queue->tail) 
+				{
+					printf("[MAIN-SEND] Queue Full! Dropping.\n");
+					sem_post(sem_mutex);
+					continue;
+				}
+				
+				// 데이터 쓰기
+	            int pos = shm_Queue->head;
+				shm_Queue->jobs[pos].proc = PROC_ID_PARENT;
+				shm_Queue->jobs[pos].from_proc = PROC_ID_MAIN;
+				memcpy(shm_Queue->jobs[pos].data, input, MSG_SIZE);
+				shm_Queue->head = (pos + 1) % QUEUE_SIZE;
+				
+				printf("[MAIN-SEND] %d Queued: %s\n", getpid(), input);
 
-			if (msgsnd(msgid, &send_msg, sizeof(send_msg.text), 0) == -1) 
-			{
-				perror("Main msgsnd failed");
+				sem_post(sem_mutex);
+				sem_post(sem_m2p); // Parent에게 알림
 			}
-
-			pthread_mutex_unlock(&msg_mutex);
+			else
+			{
+	            sem_post(sem_mutex);
+			}
 		}
 	}
 
@@ -259,36 +280,59 @@ void* send_thread_func(void* arg)
 *---------------------------------------------------------------------------*/
 void* recv_thread_func(void* arg) 
 {
-	struct msg_t revc_msg;
+	unsigned char msg_data[MSG_SIZE];
 
 	(void)arg;
 
 	while (1) 
 	{
-		memset(&revc_msg, 0, sizeof(struct msg_t));		
-		// Type 30 (Parent가 보낸 최종 ACK)만 선별 수신
-		if (msgrcv(msgid, &revc_msg, sizeof(revc_msg.text), MSG_RECV_BOSS_FROM_PARENT, IPC_NOWAIT) != -1)
+		memset(msg_data, 0, MSG_SIZE);
+
+        // 1. 부모로부터의 신호 대기 (이게 먼저 와야 함)
+        sem_wait(sem_p2m);
+        // 2. 임계 구역 진입
+        sem_wait(sem_mutex);
+
+		if(shm_Queue != NULL)
 		{
-			pthread_mutex_lock(&msg_mutex);
-			printf("\n");
-			printf("\n[Main-Recv] Received from parent [ Child%ld : %s ]\n", revc_msg.sub_id, revc_msg.text);
-			printf("Command > "); // UI 유지를 위한 프롬프트 재출력
-			fflush(stdout);
-			pthread_mutex_unlock(&msg_mutex);
+            // 3. 큐가 비어있는지 확인
+	        if (shm_Queue->head == shm_Queue->tail) 
+			{
+	            sem_post(sem_mutex);
+	            continue;
+	        }
+
+			// 4. My 메시지 인지 확인
+			int proc_id = shm_Queue->jobs[shm_Queue->tail].proc;
+			int from_proc_id = shm_Queue->jobs[shm_Queue->tail].from_proc;
+			if((proc_id != PROC_ID_MAIN) || (from_proc_id != PROC_ID_PARENT))
+			{
+				//printf("[MAIN-RECV] ID not mismatch!!! (0x%02x)\n", proc_id);
+
+				// 내 메시지가 아닌 경우: 락을 풀고 세마포어를 다시 올려서 다른 프로세스가 보게 함
+	            sem_post(sem_mutex);
+				sem_post(sem_m2p);
+
+				// CPU 점유율 과다 방지를 위한 미세 대기 (Spin 방지)
+				usleep(100);
+	            continue;
+			}
+
+			// 5. 데이터 읽기 (Consumer: tail 사용)
+			int pos = shm_Queue->tail;
+	        shm_Queue->tail = (pos + 1) % QUEUE_SIZE;
+
+	        memcpy(msg_data, shm_Queue->jobs[pos].data, MSG_SIZE);
+	        printf("\n[MAIN-RECV] Result: %s\n", msg_data);
+
+	        sem_post(sem_mutex);
 		}
 		else
 		{
-			if (errno != ENOMSG) 
-			{
-				perror("msgrcv error");
-				break;
-			}
-
-			// 큐에 메시지가 없는 경우: CPU 점유율을 위해 아주 짧게 휴식
-			//usleep(10000); // 10ms
+			sem_post(sem_mutex);
 		}
-	}
-	
+    }
+
 	return NULL;
 }
 
@@ -299,13 +343,44 @@ void* recv_thread_func(void* arg)
 *---------------------------------------------------------------------------*/
 int main(void) 
 {
-	creat("progfile", 0644);
-
-	key_t key = ftok("progfile", 65);
-	msgid = msgget(key, 0666 | IPC_CREAT);
 	signal(SIGINT, cleanup_and_exit);
 
 	pthread_t send_tid, recv_tid;
+
+	// 1. 공유 메모리 오픈 (O_CREAT 추가하여 없으면 생성)
+	shm_fd = shm_open(SHM_NAME, O_RDWR | O_CREAT, 0666);
+	if (shm_fd == -1)
+	{
+		perror("shm_open failed");
+		exit(1);
+	}
+
+	// 2. 공유 메모리 크기 설정 (구조체 크기만큼 물리적 할당)
+	if (ftruncate(shm_fd, sizeof(ShmQueue)) == -1) 
+	{
+		perror("ftruncate failed");
+		exit(1);
+	}
+
+	// 3. mmap 매핑 및 에러 체크
+	shm_Queue = (ShmQueue *)mmap(NULL, sizeof(ShmQueue),
+	PROT_READ | PROT_WRITE,
+	MAP_SHARED, shm_fd, 0);
+
+	if (shm_Queue == MAP_FAILED) 
+	{
+		perror("mmap failed");
+		exit(1);
+	}
+
+	// 큐 인덱스 초기화 (생성 직후 한 번만 수행)
+	shm_Queue->head = 0;
+	shm_Queue->tail = 0;
+
+	// 4. 세마포어 오픈
+	sem_m2p   = sem_open(SEM_M2P, O_CREAT, 0666, 0);
+	sem_p2m   = sem_open(SEM_P2M, O_CREAT, 0666, 0);
+	sem_mutex = sem_open(SEM_MUTEX, O_CREAT, 0666, 1);
 
 	// 프로세스 초기화 및 생성
 	int nTask = 0;
@@ -373,12 +448,6 @@ int main(void)
 	if (pthread_create(&recv_tid, NULL, recv_thread_func, NULL) != 0) 
 	{
 		perror("Failed to create recv thread");
-		return 1;
-	}
-
-	if (pthread_mutex_init(&msg_mutex, NULL) != 0)
-	{
-		perror("Mutex init failed");
 		return 1;
 	}
 

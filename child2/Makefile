@@ -8,6 +8,9 @@ ifneq ($(findstring arm,$(CC)),)
 CFLAGS += -march=armv7-a -mfpu=neon  # ARM 전용 최적화 옵션 예시
 endif
 
+LDFLAGS +=
+LDLIBS  += -lrt
+
 CUR_DIR := $(CURDIR)
 
 TARGET = taskChild2
@@ -30,7 +33,7 @@ all: $(FINAL_TARGET)
 
 $(FINAL_TARGET): $(OBJS)
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -o $@ $^
+	$(CC) $(CFLAGS) $^ $(LDLIBS) -o $@
 	@echo "[Done] $(TARGET) build complete."
 
 $(OBJ_DIR)/%.o: %.c
