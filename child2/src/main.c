@@ -252,19 +252,32 @@ int main(void)
 
 	prctl(PR_SET_NAME, "taskChild2");
 
-	// 공유 메모리 연결
-	shm_fd = shm_open(SHM_NAME, O_RDWR, 0666);
+	// 1. 공유 메모리 오픈 (O_CREAT 추가하여 없으면 생성)
+	shm_fd = shm_open(SHM_NAME, O_RDWR | O_CREAT, 0666);
 	if (shm_fd == -1)
 	{
 		perror("shm_open failed");
-		return 1;
+		exit(1);
 	}
 
-	shm_Queue = mmap(NULL, sizeof(ShmQueue), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
-	if (shm_Queue == MAP_FAILED)
+#if 1
+	// 2. 공유 메모리 크기 설정 (구조체 크기만큼 물리적 할당)
+	if (ftruncate(shm_fd, sizeof(ShmQueue)) == -1) 
+	{
+		perror("ftruncate failed");
+		exit(1);
+	}
+#endif
+
+	// 3. mmap 매핑 및 에러 체크
+	shm_Queue = (ShmQueue *)mmap(NULL, sizeof(ShmQueue),
+								PROT_READ | PROT_WRITE,
+								MAP_SHARED, shm_fd, 0);
+
+	if (shm_Queue == MAP_FAILED) 
 	{
 		perror("mmap failed");
-		return 1;
+		exit(1);
 	}
 
 	// 세마포어 연결

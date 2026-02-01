@@ -364,8 +364,8 @@ int main(void)
 
 	// 3. mmap 매핑 및 에러 체크
 	shm_Queue = (ShmQueue *)mmap(NULL, sizeof(ShmQueue),
-	PROT_READ | PROT_WRITE,
-	MAP_SHARED, shm_fd, 0);
+								PROT_READ | PROT_WRITE,
+								MAP_SHARED, shm_fd, 0);
 
 	if (shm_Queue == MAP_FAILED) 
 	{
