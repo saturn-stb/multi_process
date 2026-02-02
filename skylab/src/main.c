@@ -29,6 +29,7 @@
 #include <semaphore.h>
 
 #include "msg_def.h"
+#include "msgQ.h"
 #include "util.h"
 
 /******************************************************************************

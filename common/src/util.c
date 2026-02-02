@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <time.h>
 #include <ctype.h>
+#include <unistd.h>
 
 //FILEIO
 #include <sys/stat.h>
@@ -207,14 +208,15 @@ void hexDumpToFile(FILE *file, char *desc, void *addr, int len)
 *---------------------------------------------------------------------------*/
 unsigned int Random(unsigned int repeat)
 {
-	unsigned int random = 0; // ?????? ???? ????
+	unsigned int random = 0;
+	unsigned int i = 0;
 
 	Print("_Random [");
 	srand(time(NULL));
-	for (int i = 0; i < repeat; i++) 
+	for (i = 0; i < repeat; i++) 
 	{ 
-		random = rand()%5; // ???? ????
-		Print(" %d ", random); // ???
+		random = rand()%5; 
+		Print(" %d ", random);
 	}
 	Print("]\n");
 
@@ -231,14 +233,13 @@ int makeFolder(char *path, char *folder)
 	DIR 		   *dir_info;
 	struct dirent  *dir_entry;
 
-	mkdir(folder, 0755); // ???? ?????? ??? ???? ????
+	mkdir(folder, 0755);
 
 	dir_info = opendir(path);
 	if (NULL != dir_info)
 	{
-		while(dir_entry = readdir(dir_info))
+		while((dir_entry = readdir(dir_info)) != NULL)
 		{ 
-			// ???? ??? ??? ??? ????? ???? ???
 			//Print("%s\n", dir_entry->d_name);
 		}
 		
@@ -324,7 +325,7 @@ void Sleep(unsigned long count)
 *---------------------------------------------------------------------------*/
 void DelayUs(unsigned long us) 
 {
-	usleep();
+	usleep(us);
 }
 
 /*-----------------------------------------------------------------------------

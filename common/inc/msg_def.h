@@ -25,45 +25,17 @@
 *
 *
 *---------------------------------------------------------------------------*/
-#define MSG_SIZE 	52
-#define QUEUE_SIZE 	4
-
-#define SHM_NAME 	"/mp_shm"
-
-#define SEM_M2P   	"/sem_m2p"
-#define SEM_P2M   	"/sem_p2m"
-#define SEM_P2C   	"/sem_p2c"
-#define SEM_C2P   	"/sem_c2p"
-#define SEM_MUTEX 	"/sem_mutex"
-
-
 #define PROC_ID_SKYLAB 	0x1
 #define PROC_ID_PARENT 	0x2
 #define PROC_ID_CHILD1 	0x4
 #define PROC_ID_CHILD2 	0x8
 #define PROC_ID_CHILD3 	0x10
 
-
 /*-----------------------------------------------------------------------------
 *
 *
 *
 *---------------------------------------------------------------------------*/
-typedef struct 
-{
-	int proc; // 4bytes
-	int from_proc; // 4bytes
-	unsigned char data[MSG_SIZE]; // 48bytes
-
-} Job;
-
-typedef struct
-{
-	int head; // 4bytes
-	int tail; // 4bytes
-	Job jobs[QUEUE_SIZE]; // 52bytes
-
-} ShmQueue; // 64bytes
 
 /*-----------------------------------------------------------------------------
 *
