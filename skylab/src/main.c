@@ -258,7 +258,7 @@ void* send_thread_func(void* arg)
 				memcpy(shm_Queue->jobs[pos].data, input, MSG_SIZE);
 				shm_Queue->head = (pos + 1) % QUEUE_SIZE;
 				
-				Print("\n[SKYLAB-SEND] %d Queued: %s\n", getpid(), input);
+				CPrint("\n[SKYLAB-SEND] %d Queued: %s\n", getpid(), input);
 
 				sem_post(sem_mutex);
 				sem_post(sem_m2p); // Parent에게 알림
@@ -324,7 +324,7 @@ void* recv_thread_func(void* arg)
 	        shm_Queue->tail = (pos + 1) % QUEUE_SIZE;
 
 	        memcpy(msg_data, shm_Queue->jobs[pos].data, MSG_SIZE);
-	        Print("\n[SKYLAB-RECV] Result: %s\n", msg_data);
+	        CPrint("\n[SKYLAB-RECV] Result: %s\n", msg_data);
 
 	        sem_post(sem_mutex);
 		}

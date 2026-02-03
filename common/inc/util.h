@@ -35,13 +35,40 @@
 								}while(0)
 							
 
-#define Print printf
-
 #define E_Complete   0x0000
 #define E_Failed     0x0001
 
 #define TRUE         1
 #define FALSE        (!TRUE)
+
+#if 1
+/*
+	31: 빨간색 (에러 메시지용)
+	32: 초록색 (성공/정상 로그용)
+	33: 노란색 (경고 메시지용)
+	34: 파란색 (정보 메시지용)
+	35: 마젠타 (보라색)
+*/
+#define DLOG(fmt, ...) \
+	fprintf(stderr, "\033[0;34m[%s:%d]\033[0m " fmt, \
+	__FUNCTION__, __LINE__, ##__VA_ARGS__)
+#else
+#define DLOG(fmt, ...) ((void)0)
+#endif
+
+#if 1
+#define Print(fmt, ...) fprintf(stderr, fmt, ##__VA_ARGS__)
+#else
+#define Print(fmt, ...) ((void)0)
+#endif
+
+#if 1
+#define CPrint(fmt, ...) \
+	fprintf(stderr, "\033[0;32m\033[0m " fmt, ##__VA_ARGS__)
+#else
+#define Print(fmt, ...) ((void)0)
+#endif
+
 
 /*-----------------------------------------------------------------------------
 *
