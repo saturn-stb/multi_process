@@ -72,8 +72,8 @@
 *---------------------------------------------------------------------------*/
 int Create_Queue(MessageQueue *q) 
 {
-	q->front = 0;
-	q->rear = 0;
+	q->head = 0;
+	q->tail = 0;
 	
 	// 리턴값이 -1이면 초기화 실패
 	if (sem_init(&q->mutex, 0, 1) == -1) 
@@ -105,7 +105,7 @@ int Create_Queue(MessageQueue *q)
 *
 *
 *---------------------------------------------------------------------------*/
-void Put_MsgQueue(MessageQueue *q, const MessageData *msg) 
+void Put_MsgQueue(MessageQueue *q, const Message *msg) 
 {
     // EINTR 발생 시 다시 wait 하도록 루프 처리 (선택 사항)
 	while (sem_wait(&q->empty) == -1)
@@ -122,8 +122,8 @@ void Put_MsgQueue(MessageQueue *q, const MessageData *msg)
 		return;
 	}
 
-	memcpy(&q->buffer[q->rear], msg, sizeof(MessageData));
-	q->rear = (q->rear + 1) % QUEUE_SIZE;
+	memcpy(&q->msg[q->tail], msg, sizeof(Message));
+	q->tail = (q->tail + 1) % QUEUE_SIZE;
 
 	if (sem_post(&q->mutex) == -1) // 큐 접근 해제 (Unlock)
 	{
@@ -141,7 +141,7 @@ void Put_MsgQueue(MessageQueue *q, const MessageData *msg)
 *
 *
 *---------------------------------------------------------------------------*/
-int Get_MsgQueue(MessageQueue *q, MessageData *msg) 
+int Get_MsgQueue(MessageQueue *q, Message *msg) 
 {
 	// 1. Full 세마포어 대기 (데이터가 있을 때까지)
 	if (sem_wait(&q->full) == -1)
@@ -160,8 +160,8 @@ int Get_MsgQueue(MessageQueue *q, MessageData *msg)
 	}
 
 	// 데이터 추출 로직
-	memcpy(msg, &q->buffer[q->front], sizeof(MessageData));
-	q->front = (q->front + 1) % QUEUE_SIZE;
+	memcpy(msg, &q->msg[q->head], sizeof(Message));
+	q->head = (q->head + 1) % QUEUE_SIZE;
 
 	// 3. Mutex 해제
 	if (sem_post(&q->mutex) == -1) 
@@ -211,52 +211,43 @@ void Close_Queue(MessageQueue *q)
 *
 *
 *---------------------------------------------------------------------------*/
-SharedQueue* Create_ShmQueue(const char *name)
+int Create_ShmQueue(char *shm, ShmQueue **shmQ)
 {
-	// 1. 공유 메모리 객체 오픈 (파일처럼 생성)
-	// O_CREAT: 없으면 생성, O_RDWR: 읽기/쓰기 권한
-	int fd = shm_open(name, O_CREAT | O_RDWR, 0666);
-	if (fd == -1) 
-	{
-		Print("Failed to shm_open");
-		return NULL;
+	int shm_fd;
+	ShmQueue *temp_ptr; // 임시 포인터 선언
+
+	shm_fd = shm_open(shm, O_RDWR | O_CREAT, 0666);
+	if (shm_fd == -1) return -1;
+
+	ftruncate(shm_fd, sizeof(ShmQueue));
+
+	// mmap 결과를 임시 포인터에 할당
+	temp_ptr = (ShmQueue *)mmap(NULL, sizeof(ShmQueue),
+								PROT_READ | PROT_WRITE,
+								MAP_SHARED, shm_fd, 0);
+
+	if (temp_ptr == MAP_FAILED) return -1;
+
+	// 초기화 (임시 포인터를 사용하므로 -> 연산자가 안전함)
+	temp_ptr->head = 0;
+	temp_ptr->tail = 0;
+
+	// 4. 세마포어 초기화 (주소 전달 시 & 사용)
+	if (sem_init(&(temp_ptr->mutex), 1, 1) == -1) {
+		perror("sem_init mutex failed");
+		return -1;
+	}
+	if (sem_init(&(temp_ptr->signal), 1, 0) == -1) {
+		perror("sem_init signal failed");
+		return -1;
 	}
 
-    // 2. 공유 메모리 크기 설정 (구조체 크기만큼 확보)
-    if (ftruncate(fd, sizeof(SharedQueue)) == -1)
-	{
-        Print("Failed to ftruncate");
-        close(fd);
-        return NULL;
-    }
+	// 마지막에 외부에서 넘겨준 포인터 변수에 주소값 복사
+	*shmQ = temp_ptr;
 
-    // 3. 메모리 맵핑 (파일 기술자를 메모리 주소로 연결)
-    SharedQueue *q = (SharedQueue *)mmap(NULL, sizeof(SharedQueue), 
-                                        PROT_READ | PROT_WRITE, 
-                                        MAP_SHARED, fd, 0);
-    if (q == MAP_FAILED)
-	{
-        Print("Failed to mmap");
-        close(fd);
-        return NULL;
-    }
+	close(shm_fd); // 매핑 후 fd는 닫아도 유지됨
 
-	// [중요] 최초 생성자(O_CREAT)인 경우에만 수행
-	// 기존에 남아있던 'germany' 같은 쓰레기 데이터를 완전히 제거합니다.
-	memset(q, 0x0, sizeof(SharedQueue)); 
-
-	// 3. 세마포어 초기화 (pshared = 1 필수)
-	//sem_m2p   = sem_open(SEM_M2P, 0);
-	//sem_p2m   = sem_open(SEM_P2M, 0);
-	//sem_mutex = sem_open(SEM_MUTEX, 0);	
-	if (sem_init(&q->mutex, 1, 1) == -1) { Print("sem_init mutex failed"); return NULL; }
-	if (sem_init(&q->empty, 1, QUEUE_SIZE) == -1) { Print("sem_init empty failed"); return NULL; }
-	if (sem_init(&q->full, 1, 0) == -1) { Print("sem_init full failed"); return NULL; }
-
-	q->front = 0;
-	q->rear = 0;
-	
-	return q;
+	return 0;
 }
 
 /*-----------------------------------------------------------------------------
@@ -264,41 +255,28 @@ SharedQueue* Create_ShmQueue(const char *name)
 *
 *
 *---------------------------------------------------------------------------*/
-int Put_ShmMsgQueue(SharedQueue *q, const MessageData *msg) 
+int Put_ShmMsgQueue(ShmQueue *shmQ, Message *msg) 
 {
-    // [1] empty 세마포어 대기: 빈 공간이 생길 때까지
-    while (sem_wait(&q->empty) == -1)
-	{
-        if (errno == EINTR) 
-        {
-			//Print("sem_wait full %s (errno %d)", strerror(errno), errno);
-			continue; // 시그널 인터럽트 시 재시도
-        }
+	if (shmQ == NULL || shmQ == MAP_FAILED) return -1;
 		
-        Print("sem_wait empty failed");
-        return -1;
-    }
-
-    // [2] mutex 획득: 큐 접근 권한 확보
-    while (sem_wait(&q->mutex) == -1) 
-	{
-        if (errno == EINTR) continue;
-        //Print("sem_wait mutex failed");
-        // [중요] 이미 감소시킨 empty 카운트를 다시 복구시켜야 큐가 꼬이지 않습니다.
-        if (sem_post(&q->empty) == -1) 
-		{
-            Print("critical sem_post recovery empty failed");
-        }
-        return -1;
-    }
+	sem_wait(&(shmQ->mutex)); 
 	
-    // [중요] 기존 잔상 데이터를 지우고 새 데이터를 복사
-    memset(&q->buffer[q->rear], 0x0, sizeof(MessageData));
-	memcpy(&q->buffer[q->rear], msg, sizeof(MessageData));
-	q->rear = (q->rear + 1) % QUEUE_SIZE;
+	// Queue Full 체크
+	if (((shmQ->head + 1) % QUEUE_SIZE) == shmQ->tail) 
+	{
+		perror("Queue Full, waiting...");
+		sem_post(&(shmQ->mutex));
+		DelayUs(50000); // 50ns
+		return -1;
+	}
 
-	sem_post(&q->mutex);
-	sem_post(&q->full);
+	memcpy(&shmQ->msg[shmQ->head], msg, sizeof(Message));
+	shmQ->head = (shmQ->head + 1) % QUEUE_SIZE;
+	
+	sem_post(&(shmQ->mutex));
+
+	// taskMain의 수신 스레드에게 신호 전송
+	sem_post(&(shmQ->signal)); 
 
 	return 0;
 }
@@ -308,149 +286,80 @@ int Put_ShmMsgQueue(SharedQueue *q, const MessageData *msg)
 *
 *
 *---------------------------------------------------------------------------*/
-int Get_ShmMsgQueue(SharedQueue *q, MessageData *msg)
+int Get_ShmMsgQueue(ShmQueue *shmQ, Message *msg)
 {
-    // [1] full 세마포어 대기: 데이터가 들어올 때까지
-    while (sem_wait(&q->full) == -1)
-	{
-        if (errno == EINTR) 
-        {
-			//Print("sem_wait full %s (errno %d)", strerror(errno), errno);
-			continue; 
-        }
-        Print("sem_wait full failed");
-        return -1;
-    }
+	if (shmQ == NULL || shmQ == MAP_FAILED) return -1;
 	
-    // [2] mutex 획득: 큐 접근 권한
-    while (sem_wait(&q->mutex) == -1) 
+	// 신호 대기
+	sem_wait(&(shmQ->signal));
+	perror("00000000000000000000");
+	sem_wait(&(shmQ->mutex));
+	perror("11111111111111111111");
+	
+	// 큐가 비어있는지 확인
+	if (shmQ->head == shmQ->tail) 
 	{
-        if (errno == EINTR)
-        {
-			//Print("sem_wait full %s (errno %d)", strerror(errno), errno);
-			continue;
-        }
-        Print("sem_wait mutex failed");
-        sem_post(&q->full); // full 카운트를 다시 원복 시켜야 함
-        return -1;
-    }
+		perror("Queue Full! Dropping.");
+		sem_post(&(shmQ->mutex));
+		return -1;
+	}
 
-	memcpy(msg, &q->buffer[q->front], sizeof(MessageData));
-	q->front = (q->front + 1) % QUEUE_SIZE;
-
-	sem_post(&q->mutex);
-	sem_post(&q->empty);
-
+	perror("222222222222222222222");
+	// My 메시지 인지 확인
+	if(shmQ->msg[shmQ->tail].to_id == msg->to_id)
+	{
+		perror("33333333333333333333333");
+		// 데이터 읽기 (Consumer: head 사용)
+		memcpy(msg, &shmQ->msg[shmQ->tail], sizeof(Message));
+		shmQ->tail = (shmQ->tail + 1) % QUEUE_SIZE;
+		
+		sem_post(&(shmQ->mutex));
+	}
+	else
+	{
+		perror("444444444444444444444444");
+		// 내 메시지가 아닌 경우: 락을 풀고 세마포어를 다시 올려서 다른 프로세스가 보게 함
+		sem_post(&(shmQ->mutex));
+		sem_post(&(shmQ->signal));
+		
+		// CPU 점유율 과다 방지를 위한 미세 대기 (Spin-lock 방지)
+		DelayUs(100); // 100us
+		return -1;
+	}
+	
+	perror("55555555555555555555555555");
 	return 0;
 }
 
-/*-----------------------------------------------------------------------------
-*
-*
-*
-*---------------------------------------------------------------------------*/
-int Get_ShmMessage_InOrder(SharedQueue *q, MessageData *msg, int my_id) 
-{
-    // [1] 데이터가 있는지 먼저 확인 (기다림)
-	//Print("[%s] Got full, waiting for mutex...\n", __func__);
-
-    // [2] Mutex 획득
-    while (sem_wait(&q->mutex) == -1) 
-	{
-        if (errno == EINTR) 
-        {
-			continue;
-        }
-        Print("sem_wait mutex failed");
-        sem_post(&q->full); // 기다렸던 데이터 권한 반납
-        return -1;
-    }
-
-    while (sem_wait(&q->full) == -1) 
-	{
-        if (errno == EINTR) // Interrupted System Call
-        {
-			//Print("sem_wait full %s (errno %d)", strerror(errno), errno);
-			continue;
-        }
-        Print("sem_wait full failed");
-        return -1;
-    }
-
-	//Print("[%s] Inside critical section!\n", __func__);
-
-    // [3] 맨 앞 메시지 검사 (Peek)
-    MessageData *front_msg = &q->buffer[q->front];
-
-    if (front_msg->to_id != my_id) 
-	{
-        // [내 메시지가 아닌 경우]
-        // 중요: 소모했던 full 카운트를 반드시 다시 돌려주어야 
-        // 다른 프로세스가 이 메시지를 확인할 수 있습니다.
-        sem_post(&q->full); 
-        sem_post(&q->mutex);
-        
-        // CPU 과점유 방지를 위해 아주 짧은 휴식 권장
-		//DelayUs(100);
-        return 0; 
-    }
-	
-	// [내 메시지인 경우] 실제 꺼내기 수행
-	memcpy(msg, front_msg, sizeof(MessageData));
-	memset(front_msg, 0, sizeof(MessageData)); // 잔상 제거
-	q->front = (q->front + 1) % QUEUE_SIZE;
-	
-	sem_post(&q->mutex);
-	sem_post(&q->empty); // 생산자에게 빈 공간 알림
-	
-	return 1; 
-}
 
 /*-----------------------------------------------------------------------------
 *
 *
 *
 *---------------------------------------------------------------------------*/
-void Close_ShmQueue(SharedQueue *q, int fd, const char *name) 
+int Close_ShmQueue(char *shm, ShmQueue *shmQ)
 {
-	// 1. 생성된 세마포어들을 파괴합니다.
-	// 더 이상 세마포어를 사용하지 않음을 OS에 알리고 자원을 반환합니다.
-	if (sem_destroy(&q->mutex) == -1)
-	{
-		Print("sem_destroy mutex failed");
-	}
+    if (shmQ == NULL || shmQ == MAP_FAILED) return -1;
 
-	if (sem_destroy(&q->empty) == -1)
-	{
-		Print("sem_destroy empty failed");
-	}
+    // 1. 세마포어 파괴 (sem_init으로 초기화한 경우)
+    // 포인터가 아니므로 SEM_FAILED 체크가 필요 없으며, &를 붙여 호출합니다.
+    sem_destroy(&(shmQ->mutex));
+    sem_destroy(&(shmQ->signal));
 
-	if (sem_destroy(&q->full) == -1) 
-	{
-		Print("sem_destroy full failed");
-	}
-
-    // 2. 메모리 매핑 해제 (munmap)
-    if (munmap(q, sizeof(SharedQueue)) == -1) 
-	{
-        Print("Failed to munmap");
+    // 2. mmap 해제
+    if (munmap(shmQ, sizeof(ShmQueue)) == -1) 
+    {
+        perror("munmap failed");
+        // 실패하더라도 unlink는 진행하는 것이 보통입니다.
     }
 
-    // 3. 파일 기술자 닫기
-    if (close(fd) == -1)
+    // 3. 공유 메모리 객체 이름 삭제 (시스템에서 제거)
+    // 이 작업은 모든 프로세스가 종료될 때 한 번만 수행하는 것이 좋습니다.
+    if (shm != NULL) 
 	{
-        Print("Failed to close shm fd");
+        shm_unlink(shm);
     }
 
-    // 4. 시스템에서 공유 메모리 객체 삭제
-    // 이 함수를 호출해야 /dev/shm/ 에서 파일이 실제로 사라집니다.
-    if (name != NULL) 
-	{
-        if (shm_unlink(name) == -1) 
-		{
-            Print("Failed to shm_unlink");
-        }
-    }
-
+    return 0;
 }
 

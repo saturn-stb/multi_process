@@ -63,11 +63,8 @@ typedef struct
 *
 *
 *---------------------------------------------------------------------------*/
-static int shm_fd = -1;
-static ShmQueue *shm_Queue = NULL;
-static sem_t *sem_m2p = NULL;
-static sem_t *sem_p2m = NULL;
-static sem_t *sem_mutex = NULL;
+static ShmQueue *shm_RecvQ = NULL;
+static ShmQueue *shm_SendQ = NULL;
 
 static pid_t p_pid, c1_pid, c2_pid, c3_pid;
 static ProcInfo procs[MAX_TASK]; // taskParent, taskChild1, taskChild2, taskChild3
@@ -175,7 +172,6 @@ void cleanup_and_exit(int sig)
 void* send_thread_func(void* arg)
 {
 	char input[MSG_SIZE];
-	unsigned char msg_data[MSG_SIZE];
 
 	(void)arg;
 
@@ -186,7 +182,6 @@ void* send_thread_func(void* arg)
 
 		// 1. 입력 버퍼 초기화 (쓰레기 값 방지)
 		memset(input, 0, MSG_SIZE);
-		memset(msg_data, 0, MSG_SIZE);		
 
 		if (fgets(input, MSG_SIZE, stdin) != NULL) 
 		{
@@ -238,35 +233,15 @@ void* send_thread_func(void* arg)
 				continue;
 			}
 
-			// --- 공유 메모리 작업 시작 ---
-			sem_wait(sem_mutex);
-
-			if(shm_Queue != NULL)
-			{			
-				// Queue Full 체크
-				if (((shm_Queue->head + 1) % QUEUE_SIZE) == shm_Queue->tail) 
-				{
-					Print("\n[SKYLAB-SEND] Queue Full, waiting...\n");
-					sem_post(sem_mutex);
-					continue;
-				}
-				
-				// 데이터 쓰기
-	            int pos = shm_Queue->head;
-				shm_Queue->jobs[pos].proc = PROC_ID_PARENT;
-				shm_Queue->jobs[pos].from_proc = PROC_ID_SKYLAB;
-				memcpy(shm_Queue->jobs[pos].data, input, MSG_SIZE);
-				shm_Queue->head = (pos + 1) % QUEUE_SIZE;
-				
-				CPrint("\n[SKYLAB-SEND] %d Queued: %s\n", getpid(), input);
-
-				sem_post(sem_mutex);
-				sem_post(sem_m2p); // Parent에게 알림
-			}
-			else
-			{
-	            sem_post(sem_mutex);
-			}
+			static Message msg;
+			memset(&msg, 0x0, sizeof(Message));
+			
+			msg.to_id = PROC_ID_PARENT;
+			msg.from_id = PROC_ID_SKYLAB;
+			memcpy(msg.data, input, strlen(input));
+			msg.length = strlen(input);
+			Print("\n[SKYLAB-SEND] message to PARENT : %s\n", msg.data);
+			Put_ShmMsgQueue(shm_SendQ, &msg);
 		}
 	}
 
@@ -280,59 +255,20 @@ void* send_thread_func(void* arg)
 *---------------------------------------------------------------------------*/
 void* recv_thread_func(void* arg) 
 {
-	unsigned char msg_data[MSG_SIZE];
+	Message msg;
 
 	(void)arg;
 
 	while (1) 
 	{
-		memset(msg_data, 0, MSG_SIZE);
+		memset(&msg, 0x0, sizeof(Message));
 
-        // 1. 부모로부터의 신호 대기 (이게 먼저 와야 함)
-        sem_wait(sem_p2m);
-        // 2. 임계 구역 진입
-        sem_wait(sem_mutex);
-
-		if(shm_Queue != NULL)
+		msg.to_id = PROC_ID_SKYLAB;
+		if(Get_ShmMsgQueue(shm_RecvQ, &msg) == 0)
 		{
-            // 3. 큐가 비어있는지 확인
-	        if (shm_Queue->head == shm_Queue->tail) 
-			{
-				Print("\n[SKYLAB-RECV] Queue Full! Dropping.\n");
-	            sem_post(sem_mutex);
-	            continue;
-	        }
-
-			// 4. My 메시지 인지 확인
-			int proc_id = shm_Queue->jobs[shm_Queue->tail].proc;
-			int from_proc_id = shm_Queue->jobs[shm_Queue->tail].from_proc;
-			if((proc_id != PROC_ID_SKYLAB) || (from_proc_id != PROC_ID_PARENT))
-			{
-				Print("\n[SKYLAB-RECV] ID mismatch!!! (0x%02x)\n", proc_id);
-
-				// 내 메시지가 아닌 경우: 락을 풀고 세마포어를 다시 올려서 다른 프로세스가 보게 함
-	            sem_post(sem_mutex);
-				sem_post(sem_m2p);
-
-				// CPU 점유율 과다 방지를 위한 미세 대기 (Spin-lock 방지)
-				DelayUs(100);
-	            continue;
-			}
-
-			// 5. 데이터 읽기 (Consumer: tail 사용)
-			int pos = shm_Queue->tail;
-	        shm_Queue->tail = (pos + 1) % QUEUE_SIZE;
-
-	        memcpy(msg_data, shm_Queue->jobs[pos].data, MSG_SIZE);
-	        CPrint("\n[SKYLAB-RECV] Result: %s\n", msg_data);
-
-	        sem_post(sem_mutex);
+			Print("\n[SKYLAB-RECV] Message from PARENT : %s\n", msg.data);
 		}
-		else
-		{
-			sem_post(sem_mutex);
-		}
-    }
+	}
 
 	return NULL;
 }
@@ -348,40 +284,17 @@ int main(void)
 
 	pthread_t send_tid, recv_tid;
 
-	// 1. 공유 메모리 오픈 (O_CREAT 추가하여 없으면 생성)
-	shm_fd = shm_open(SHM_NAME, O_RDWR | O_CREAT, 0666);
-	if (shm_fd == -1)
+	if (Create_ShmQueue(SHM_RECV_NAME, &shm_RecvQ) != 0)
 	{
-		perror("shm_open failed");
+		Print("shm_open failed\n");
 		exit(1);
 	}
 
-	// 2. 공유 메모리 크기 설정 (구조체 크기만큼 물리적 할당)
-	if (ftruncate(shm_fd, sizeof(ShmQueue)) == -1) 
+	if (Create_ShmQueue(SHM_SEND_NAME, &shm_SendQ) != 0)
 	{
-		perror("ftruncate failed");
+		Print("shm_open failed\n");
 		exit(1);
 	}
-
-	// 3. mmap 매핑 및 에러 체크
-	shm_Queue = (ShmQueue *)mmap(NULL, sizeof(ShmQueue),
-								PROT_READ | PROT_WRITE,
-								MAP_SHARED, shm_fd, 0);
-
-	if (shm_Queue == MAP_FAILED) 
-	{
-		perror("mmap failed");
-		exit(1);
-	}
-
-	// 큐 인덱스 초기화 (생성 직후 한 번만 수행)
-	shm_Queue->head = 0;
-	shm_Queue->tail = 0;
-
-	// 4. 세마포어 오픈
-	sem_m2p   = sem_open(SEM_M2P, O_CREAT, 0666, 0);
-	sem_p2m   = sem_open(SEM_P2M, O_CREAT, 0666, 0);
-	sem_mutex = sem_open(SEM_MUTEX, O_CREAT, 0666, 1);
 
 	// 프로세스 초기화 및 생성
 	int nTask = 0;
@@ -393,7 +306,7 @@ int main(void)
 	{
 		// output 폴더에 빌드된 taskParent 실행
 		execl("./output/taskParent", names[nTask], NULL);
-		perror("execl taskParent failed");
+		Print("execl taskParent failed\n");
 		exit(1);
 	}
 	procs[nTask].pid = p_pid;
@@ -405,7 +318,7 @@ int main(void)
 	if ((c1_pid = fork()) == 0) 
 	{
 		execl("./output/taskChild1", "taskChild1", NULL);
-		perror("execl taskChild1 failed");
+		Print("execl taskChild1 failed\n");
 		exit(1);
 	}
 	procs[nTask].pid = c1_pid;
@@ -417,7 +330,7 @@ int main(void)
 	if ((c2_pid = fork()) == 0) 
 	{
 		execl("./output/taskChild2", "taskChild2", NULL);
-		perror("execl taskChild2 failed");
+		Print("execl taskChild2 failed\n");
 		exit(1);
 	}
 	procs[nTask].pid = c2_pid;
@@ -429,7 +342,7 @@ int main(void)
 	if ((c3_pid = fork()) == 0) 
 	{
 		execl("./output/taskChild3", "taskChild3", NULL);
-		perror("execl taskChild3 failed");
+		Print("execl taskChild3 failed\n");
 		exit(1);
 	}
 	procs[nTask].pid = c3_pid;
@@ -442,13 +355,13 @@ int main(void)
 	// 송수신 각각을 담당할 스레드 생성
 	if (pthread_create(&send_tid, NULL, send_thread_func, NULL) != 0) 
 	{
-		perror("Failed to create send thread");
+		Print("Failed to create send thread\n");
 		return 1;
 	}
 
 	if (pthread_create(&recv_tid, NULL, recv_thread_func, NULL) != 0) 
 	{
-		perror("Failed to create recv thread");
+		Print("Failed to create recv thread\n");
 		return 1;
 	}
 
