@@ -31,14 +31,10 @@
 #define MSG_SIZE 				256
 #define QUEUE_SIZE 				16
 
+#define SHM_NAME 				"/shm_queue"
+
 #define SHM_RECV_NAME 			"/m2p"
 #define SHM_SEND_NAME 			"/p2m"
-
-#define SEM_SIG_RECV_NAME   	"/Sem_Sig_Recv"
-#define SEM_SIG_SEND_NAME   	"/Sem_Sig_Send"
-
-#define SEM_MUTEX_RECV_NAME		"/Sem_Mutex_Recv"
-#define SEM_MUTEX_SEND_NAME		"/Sem_Mutex_Send"
 
 /*-----------------------------------------------------------------------------
 *
@@ -103,6 +99,7 @@ extern int Get_MsgQueue(MessageQueue *q, Message *msg);
 extern void Close_Queue(MessageQueue *q);
 
 extern int Create_ShmQueue(char *shm, ShmQueue **shmQ);
+extern int Open_ShmQueue(char *shm, ShmQueue **shmQ);
 extern int Put_ShmMsgQueue(ShmQueue *shmQ, Message *msg);
 extern int Get_ShmMsgQueue(ShmQueue *shmQ, Message *msg);
 extern int Close_ShmQueue(char *shm, ShmQueue *shmQ);

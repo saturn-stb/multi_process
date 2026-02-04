@@ -216,29 +216,80 @@ int Create_ShmQueue(char *shm, ShmQueue **shmQ)
 	int shm_fd;
 	ShmQueue *temp_ptr; // 임시 포인터 선언
 
-	shm_fd = shm_open(shm, O_RDWR | O_CREAT, 0666);
-	if (shm_fd == -1) return -1;
+	shm_fd = shm_open(shm, O_RDWR | O_CREAT | O_TRUNC, 0666);
+	if (shm_fd == -1)
+	{
+		perror("shm_open failed");
+		return -1;
+	}
 
-	ftruncate(shm_fd, sizeof(ShmQueue));
+	if(ftruncate(shm_fd, sizeof(ShmQueue)) == -1)
+	{
+		perror("ftruncate failed");
+		return -1;
+	}
 
 	// mmap 결과를 임시 포인터에 할당
 	temp_ptr = (ShmQueue *)mmap(NULL, sizeof(ShmQueue),
 								PROT_READ | PROT_WRITE,
 								MAP_SHARED, shm_fd, 0);
 
-	if (temp_ptr == MAP_FAILED) return -1;
+	if (temp_ptr == MAP_FAILED)
+	{
+		perror("mmap failed");
+		return -1;
+	}
 
 	// 초기화 (임시 포인터를 사용하므로 -> 연산자가 안전함)
 	temp_ptr->head = 0;
 	temp_ptr->tail = 0;
 
 	// 4. 세마포어 초기화 (주소 전달 시 & 사용)
-	if (sem_init(&(temp_ptr->mutex), 1, 1) == -1) {
+	if (sem_init(&(temp_ptr->mutex), 1, 1) == -1)
+	{
 		perror("sem_init mutex failed");
 		return -1;
 	}
-	if (sem_init(&(temp_ptr->signal), 1, 0) == -1) {
+	
+	if (sem_init(&(temp_ptr->signal), 1, 0) == -1) 
+	{
 		perror("sem_init signal failed");
+		return -1;
+	}
+
+	// 마지막에 외부에서 넘겨준 포인터 변수에 주소값 복사
+	*shmQ = temp_ptr;
+
+	close(shm_fd); // 매핑 후 fd는 닫아도 유지됨
+
+	return 0;
+}
+
+/*-----------------------------------------------------------------------------
+*
+*
+*
+*---------------------------------------------------------------------------*/
+int Open_ShmQueue(char *shm, ShmQueue **shmQ)
+{
+	int shm_fd;
+	ShmQueue *temp_ptr; // 임시 포인터 선언
+
+	shm_fd = shm_open(shm, O_RDWR, 0666);
+	if (shm_fd == -1)
+	{
+		perror("shm_open failed");
+		return -1;
+	}
+
+	// mmap 결과를 임시 포인터에 할당
+	temp_ptr = (ShmQueue *)mmap(NULL, sizeof(ShmQueue),
+								PROT_READ | PROT_WRITE,
+								MAP_SHARED, shm_fd, 0);
+
+	if (temp_ptr == MAP_FAILED)
+	{
+		perror("mmap failed");
 		return -1;
 	}
 
@@ -262,16 +313,16 @@ int Put_ShmMsgQueue(ShmQueue *shmQ, Message *msg)
 	sem_wait(&(shmQ->mutex)); 
 	
 	// Queue Full 체크
-	if (((shmQ->head + 1) % QUEUE_SIZE) == shmQ->tail) 
+	if (((shmQ->tail + 1) % QUEUE_SIZE) == shmQ->head) 
 	{
 		perror("Queue Full, waiting...");
 		sem_post(&(shmQ->mutex));
-		DelayUs(50000); // 50ns
+		//DelayUs(50000); // 50ms
 		return -1;
 	}
 
-	memcpy(&shmQ->msg[shmQ->head], msg, sizeof(Message));
-	shmQ->head = (shmQ->head + 1) % QUEUE_SIZE;
+	memcpy(&shmQ->msg[shmQ->tail], msg, sizeof(Message));
+	shmQ->tail = (shmQ->tail + 1) % QUEUE_SIZE;
 	
 	sem_post(&(shmQ->mutex));
 
@@ -292,9 +343,7 @@ int Get_ShmMsgQueue(ShmQueue *shmQ, Message *msg)
 	
 	// 신호 대기
 	sem_wait(&(shmQ->signal));
-	perror("00000000000000000000");
 	sem_wait(&(shmQ->mutex));
-	perror("11111111111111111111");
 	
 	// 큐가 비어있는지 확인
 	if (shmQ->head == shmQ->tail) 
@@ -304,20 +353,17 @@ int Get_ShmMsgQueue(ShmQueue *shmQ, Message *msg)
 		return -1;
 	}
 
-	perror("222222222222222222222");
 	// My 메시지 인지 확인
-	if(shmQ->msg[shmQ->tail].to_id == msg->to_id)
+	if(shmQ->msg[shmQ->head].to_id == msg->to_id)
 	{
-		perror("33333333333333333333333");
 		// 데이터 읽기 (Consumer: head 사용)
-		memcpy(msg, &shmQ->msg[shmQ->tail], sizeof(Message));
-		shmQ->tail = (shmQ->tail + 1) % QUEUE_SIZE;
+		memcpy(msg, &(shmQ->msg[shmQ->head]), sizeof(Message));
+		shmQ->head = (shmQ->head + 1) % QUEUE_SIZE;
 		
 		sem_post(&(shmQ->mutex));
 	}
 	else
 	{
-		perror("444444444444444444444444");
 		// 내 메시지가 아닌 경우: 락을 풀고 세마포어를 다시 올려서 다른 프로세스가 보게 함
 		sem_post(&(shmQ->mutex));
 		sem_post(&(shmQ->signal));
@@ -327,7 +373,6 @@ int Get_ShmMsgQueue(ShmQueue *shmQ, Message *msg)
 		return -1;
 	}
 	
-	perror("55555555555555555555555555");
 	return 0;
 }
 
@@ -343,8 +388,8 @@ int Close_ShmQueue(char *shm, ShmQueue *shmQ)
 
     // 1. 세마포어 파괴 (sem_init으로 초기화한 경우)
     // 포인터가 아니므로 SEM_FAILED 체크가 필요 없으며, &를 붙여 호출합니다.
-    sem_destroy(&(shmQ->mutex));
-    sem_destroy(&(shmQ->signal));
+    //sem_destroy(&(shmQ->mutex));
+    //sem_destroy(&(shmQ->signal));
 
     // 2. mmap 해제
     if (munmap(shmQ, sizeof(ShmQueue)) == -1) 

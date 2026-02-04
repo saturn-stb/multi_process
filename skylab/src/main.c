@@ -63,8 +63,7 @@ typedef struct
 *
 *
 *---------------------------------------------------------------------------*/
-static ShmQueue *shm_RecvQ = NULL;
-static ShmQueue *shm_SendQ = NULL;
+static ShmQueue *shm_Q = NULL;
 
 static pid_t p_pid, c1_pid, c2_pid, c3_pid;
 static ProcInfo procs[MAX_TASK]; // taskParent, taskChild1, taskChild2, taskChild3
@@ -241,7 +240,7 @@ void* send_thread_func(void* arg)
 			memcpy(msg.data, input, strlen(input));
 			msg.length = strlen(input);
 			Print("\n[SKYLAB-SEND] message to PARENT : %s\n", msg.data);
-			Put_ShmMsgQueue(shm_SendQ, &msg);
+			Put_ShmMsgQueue(shm_Q, &msg);
 		}
 	}
 
@@ -264,13 +263,38 @@ void* recv_thread_func(void* arg)
 		memset(&msg, 0x0, sizeof(Message));
 
 		msg.to_id = PROC_ID_SKYLAB;
-		if(Get_ShmMsgQueue(shm_RecvQ, &msg) == 0)
+		if(Get_ShmMsgQueue(shm_Q, &msg) == 0)
 		{
 			Print("\n[SKYLAB-RECV] Message from PARENT : %s\n", msg.data);
 		}
 	}
 
 	return NULL;
+}
+
+/*-----------------------------------------------------------------------------
+* 자식 프로세스의 상태를 감시하는 핸들러
+*
+*
+*---------------------------------------------------------------------------*/
+void sigchld_handler(int sig) 
+{
+    int status;
+    pid_t pid;
+
+    // 여러 자식이 동시에 종료될 수 있으므로 루프를 돌며 모두 처리
+    // WNOHANG: 자식이 종료되지 않았으면 블로킹 없이 바로 리턴
+    while ((pid = waitpid(-1, &status, WNOHANG)) > 0) 
+	{
+        if (WIFEXITED(status))
+		{
+            Print("[SKYLAB] Child (PID: %d) exited with status %d\n", pid, WEXITSTATUS(status));
+        } 
+		else if (WIFSIGNALED(status))
+		{
+            Print("[SKYLAB] Child (PID: %d) killed by signal %d\n", pid, WTERMSIG(status));
+        }
+    }
 }
 
 /*-----------------------------------------------------------------------------
@@ -281,16 +305,21 @@ void* recv_thread_func(void* arg)
 int main(void) 
 {
 	signal(SIGINT, cleanup_and_exit);
+    struct sigaction sa;
+
+    // SIGCHLD 핸들러 설정
+    sa.sa_handler = sigchld_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART | SA_NOCLDSTOP; // SA_RESTART: 인터럽트된 시스템 콜 재시작
+    if (sigaction(SIGCHLD, &sa, NULL) == -1)
+	{
+        Print("sigaction failed\n");
+        return 1;
+    }
 
 	pthread_t send_tid, recv_tid;
 
-	if (Create_ShmQueue(SHM_RECV_NAME, &shm_RecvQ) != 0)
-	{
-		Print("shm_open failed\n");
-		exit(1);
-	}
-
-	if (Create_ShmQueue(SHM_SEND_NAME, &shm_SendQ) != 0)
+	if (Create_ShmQueue(SHM_NAME, &shm_Q) != 0)
 	{
 		Print("shm_open failed\n");
 		exit(1);
@@ -353,17 +382,19 @@ int main(void)
 	print_help();
 
 	// 송수신 각각을 담당할 스레드 생성
-	if (pthread_create(&send_tid, NULL, send_thread_func, NULL) != 0) 
+	if (pthread_create(&send_tid, NULL, send_thread_func, (void *)shm_Q) != 0) 
 	{
 		Print("Failed to create send thread\n");
 		return 1;
 	}
+	//pthread_detach(send_tid);
 
-	if (pthread_create(&recv_tid, NULL, recv_thread_func, NULL) != 0) 
+	if (pthread_create(&recv_tid, NULL, recv_thread_func, (void *)shm_Q) != 0) 
 	{
 		Print("Failed to create recv thread\n");
 		return 1;
 	}
+	//pthread_detach(recv_tid);
 
 	//Print("[SKYLAB] Multi-threaded relay started.\n");
 

@@ -57,8 +57,7 @@
 *
 *
 *---------------------------------------------------------------------------*/
-static ShmQueue *shm_RecvQ = NULL;
-static ShmQueue *shm_SendQ = NULL;
+static ShmQueue *shm_Q = NULL;
 
 static int work_done = 0;
 
@@ -95,6 +94,7 @@ static void reverse_string(char* str)
 *---------------------------------------------------------------------------*/
 static void* recv_thread_func(void* arg)
 {
+	ShmQueue *shmQ = (ShmQueue *)arg;
 	Message msg;
 
 	(void)arg;
@@ -104,7 +104,7 @@ static void* recv_thread_func(void* arg)
 		memset(&msg, 0x0, sizeof(Message));
 
 		msg.to_id = PROC_ID_CHILD1;
-		if(Get_ShmMsgQueue(shm_RecvQ, &msg) == 0)
+		if(Get_ShmMsgQueue(shmQ, &msg) == 0)
 		{
 			Print("\n[CHILD1-RECV] Message from PARENT : %s\n", msg.data);
 			memcpy(&_msg_text[0], msg.data, MSG_SIZE);
@@ -122,6 +122,7 @@ static void* recv_thread_func(void* arg)
 *---------------------------------------------------------------------------*/
 static void* send_thread_func(void* arg)
 {
+	ShmQueue *shmQ = (ShmQueue *)arg;
 	Message msg;
 
 	(void)arg;
@@ -140,8 +141,8 @@ static void* send_thread_func(void* arg)
 		msg.to_id = PROC_ID_CHILD3;
 		msg.from_id = PROC_ID_CHILD2;
 		memcpy(msg.data, &_msg_text[0], MSG_SIZE);
-		Print("\n[CHILD3-SEND] message to CHILD3 : %s\n", msg.data);
-		Put_ShmMsgQueue(shm_SendQ, &msg);
+		Print("\n[CHILD1-SEND] message to CHILD3 : %s\n", msg.data);
+		Put_ShmMsgQueue(shmQ, &msg);
 
 		work_done = 0;
 	}
@@ -160,29 +161,25 @@ int main(void)
 
 	prctl(PR_SET_NAME, "taskChild1");
 
-	if (Create_ShmQueue(SHM_RECV_NAME, &shm_RecvQ) != 0)
+	if (Open_ShmQueue(SHM_NAME, &shm_Q) != 0)
 	{
 		Print("shm_open failed\n");
 		exit(1);
 	}
 
-	if (Create_ShmQueue(SHM_SEND_NAME, &shm_SendQ) != 0)
-	{
-		Print("shm_open failed\n");
-		exit(1);
-	}
-
-	if (pthread_create(&send_tid, NULL, send_thread_func, NULL) != 0) 
+	if (pthread_create(&send_tid, NULL, send_thread_func, (void *)shm_Q) != 0) 
 	{
 		Print("Failed to create send thread\n");
 		return 1;
 	}
+	//pthread_detach(send_tid);
 
-	if (pthread_create(&recv_tid, NULL, recv_thread_func, NULL) != 0) 
+	if (pthread_create(&recv_tid, NULL, recv_thread_func, (void *)shm_Q) != 0) 
 	{
 		Print("Failed to create recv thread\n");
 		return 1;
 	}
+	//pthread_detach(recv_tid);
 
 	pthread_join(send_tid, NULL);
 	pthread_join(recv_tid, NULL);
