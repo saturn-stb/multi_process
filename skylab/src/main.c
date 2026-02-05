@@ -27,6 +27,9 @@
 #include <sys/mman.h>
 #include <sys/stat.h>		 /* For mode constants */
 #include <semaphore.h>
+#include <termios.h>
+#include <limits.h>
+#include <libgen.h> // dirname 사용 시
 
 #include "msg_def.h"
 #include "msgQ.h"
@@ -42,19 +45,32 @@
 *
 *
 *---------------------------------------------------------------------------*/
-#define MAX_TASK 4 // except SKYLAB, taskParent, taskChild1, taskChild2, taskChild3
+#define MAX_TASK 	4 // except SKYLAB, taskParent, taskChild1, taskChild2, taskChild3
+#define MAX_PATH 	256 // except SKYLAB, taskParent, taskChild1, taskChild2, taskChild3
 
 /*-----------------------------------------------------------------------------
 *
 *
 *
 *---------------------------------------------------------------------------*/
+typedef enum
+{
+	PROC_ST_PAUSE = 0,
+	PROC_ST_RUNNING,
+	PROC_ST_KILL,
+	PROC_ST_SEG_FAULT,
+	PROC_ST_EXIT, // generally exit
+	MAX_PROC_ST
+
+}ProcStatus;
+
 // 프로세스 정보 구조체
 typedef struct 
 {
 	pid_t pid;
 	char name[20];
-	int is_running; // 1: Running, 0: Paused
+	char path[128]; // 실행 파일 경로 저장 (예: "./output/taskChild1")
+	int is_running; // 1: Running, 0: Paused, 2:Kill, 3:Segmentation Fault
 
 } ProcInfo;
 
@@ -65,8 +81,9 @@ typedef struct
 *---------------------------------------------------------------------------*/
 static ShmQueue *shm_Q = NULL;
 
-static pid_t p_pid, c1_pid, c2_pid, c3_pid;
 static ProcInfo procs[MAX_TASK]; // taskParent, taskChild1, taskChild2, taskChild3
+static char my_path[MAX_PATH];
+static char* root_dir = NULL;
 
 /******************************************************************************
 *
@@ -81,12 +98,12 @@ static ProcInfo procs[MAX_TASK]; // taskParent, taskChild1, taskChild2, taskChil
 void print_help(void) 
 {
 	Print("--- Control Commands ---\n" 
-			"1. pause  [taskParent/taskChild1/taskChild2/taskChild3]\n"
-			"2. resume [taskParent/taskChild1/taskChild2/taskChild3]\n"
-			"4. status\n"
-			"5. help\n"
-			"6. exit\n"
-			"7. [Any text for IPC]\n------------------------\n");
+			"1. pause / resue / kill / exec  [taskParent/taskChild1/taskChild2/taskChild3]\n"
+			"2. status\n"
+			"3. mode   [1, using getch]\n"
+			"4. help\n"
+			"5. exit\n"
+			"6. [Any text for IPC]\n------------------------\n");
 }
 
 /*-----------------------------------------------------------------------------
@@ -97,13 +114,37 @@ void print_help(void)
 void print_status(void) 
 {
 	int i = 0;
-	Print("\n--- Process Status Report ---\n");
+	Print("\n--------------- Process Status Report ---------------\n");
 	for (i = 0; i < MAX_TASK; i++) 
 	{
 		Print("Name: %-10s | PID: %-6d | Status: %s\n", 
-				procs[i].name, procs[i].pid, procs[i].is_running ? "RUNNING" : "PAUSED");
+				procs[i].name, procs[i].pid, 
+				(procs[i].is_running == PROC_ST_RUNNING) ? "RUNNING" : 
+				(procs[i].is_running == PROC_ST_KILL) ? "KILL" : 
+				(procs[i].is_running == PROC_ST_SEG_FAULT) ? "SEG.FAULT" : "PAUSED");
 	}
-	Print("-----------------------------\n");
+	Print("-------------------------------------------------------\n");
+}
+
+/*-----------------------------------------------------------------------------
+*
+*
+*
+*---------------------------------------------------------------------------*/
+void respawn_process(int index) 
+{
+    pid_t new_pid = fork();
+    if (new_pid == 0) 
+	{
+        // 미리 저장해둔 절대 경로로 즉시 실행
+        execl(procs[index].path, procs[index].name, (char *)NULL);
+        exit(1);
+    }
+	else if (new_pid > 0)
+	{
+        procs[index].pid = new_pid;
+        procs[index].is_running = 1;
+    }
 }
 
 /*-----------------------------------------------------------------------------
@@ -114,34 +155,92 @@ void print_status(void)
 void control_process(const char* command, const char* target) 
 {
 	int i = 0;
-	pid_t target_pid = 0;
 	
-	if (strcmp(target, "taskParent") == 0) target_pid = p_pid;
-	else if (strcmp(target, "taskChild1") == 0) target_pid = c1_pid;
-	else if (strcmp(target, "taskChild2") == 0) target_pid = c2_pid;
-	else if (strcmp(target, "taskChild3") == 0) target_pid = c3_pid;
-
-	if (target_pid == 0) 
-	{
-		Print("[Main] Unknown target: %s\n", target);
-		return;
-	}
-
 	for (i = 0; i < MAX_TASK; i++) 
 	{
 		if (strcmp(procs[i].name, target) == 0) 
 		{
 			if (strcmp(command, "pause") == 0) 
 			{
-				kill(target_pid, SIGSTOP);
-				procs[i].is_running = 0;
+				kill(procs[i].pid, SIGSTOP);
 				Print("[Main] %s PAUSED\n", target);
 			} 
 			else if (strcmp(command, "resume") == 0) 
 			{
 				kill(procs[i].pid, SIGCONT);
-				procs[i].is_running = 1;
 				Print("[Main] %s RESUMED\n", target);
+			}
+			else if (strcmp(command, "kill") == 0) 
+			{
+				kill(procs[i].pid, SIGKILL);
+				Print("[Main] %s KILL\n", target);
+			} 
+			else if (strcmp(command, "segfault") == 0) 
+			{
+				kill(procs[i].pid, SIGSEGV);
+				Print("[Main] %s Segmentation fault\n", target);
+			} 
+			else if (strcmp(command, "exec") == 0) 
+			{
+				if(procs[i].is_running == PROC_ST_KILL)
+				{
+					respawn_process(i);
+					Print("[Main] %s EXEC\n", target);
+					break;
+				}
+			} 
+		}
+	}
+}
+
+/*-----------------------------------------------------------------------------
+* 자식 프로세스의 상태를 감시하는 핸들러
+*
+*
+*---------------------------------------------------------------------------*/
+void sigchld_handler(int sig) 
+{
+	int status;
+	pid_t pid;
+	int i = 0;
+
+	// WUNTRACED: 정지(STOP) 감지
+	// WCONTINUED: 재개(CONT) 감지
+	// WNOHANG: 비동기 처리
+	while ((pid = waitpid(-1, &status, WNOHANG | WUNTRACED | WCONTINUED)) > 0) 
+	{
+		for (i = 0; i < MAX_TASK; i++) 
+		{
+			if (procs[i].pid == pid) 
+			{
+				// 1. 정상 종료된 경우 (exit 호출 등)
+				if (WIFEXITED(status)) 
+				{
+					Print("\n[ALARM] %s (PID: %d) exited with status %d\n", 
+						  procs[i].name, pid, WEXITSTATUS(status));
+					procs[i].is_running = PROC_ST_SEG_FAULT;
+				}
+				// 2. 시그널에 의해 강제 종료된 경우 (kill -9, Segfault 등)
+				else if (WIFSIGNALED(status)) 
+				{
+					Print("\n[ALARM] %s (PID: %d) terminated by signal %d (%s)\n", 
+						  procs[i].name, pid, WTERMSIG(status), strsignal(WTERMSIG(status)));
+					procs[i].is_running = PROC_ST_KILL;
+				}
+				// 3. SIGSTOP에 의해 정지된 경우
+				else if (WIFSTOPPED(status)) 
+				{
+					Print("\n[ALARM] %s (PID: %d) stopped by signal %d\n", 
+						  procs[i].name, pid, WSTOPSIG(status));
+					procs[i].is_running = PROC_ST_PAUSE;
+				}
+				// 4. SIGCONT에 의해 재개된 경우
+				else if (WIFCONTINUED(status)) 
+				{
+					Print("\n[ALARM] %s (PID: %d) resumed\n", procs[i].name, pid);
+					procs[i].is_running = PROC_ST_SEG_FAULT;
+				}
+				break;
 			}
 		}
 	}
@@ -154,13 +253,39 @@ void control_process(const char* command, const char* target)
 *---------------------------------------------------------------------------*/
 void cleanup_and_exit(int sig) 
 {
+	int i;
 	(void)sig;
 	Print("\n[Main] Terminating all processes...\n");
-	kill(p_pid, SIGKILL); 
-	kill(c1_pid, SIGKILL); 
-	kill(c2_pid, SIGKILL);
-	kill(c3_pid, SIGKILL);
+	for (i = 0; i < MAX_TASK; i++) 
+	{
+		kill(procs[i].pid, SIGKILL); 
+	}
 	exit(0);
+}
+
+/*-----------------------------------------------------------------------------
+*
+*
+*
+*---------------------------------------------------------------------------*/
+int getch(void) 
+{
+    struct termios oldt, newt;
+    int ch;
+    tcgetattr(STDIN_FILENO, &oldt);
+    newt = oldt;
+
+    // ICANON: 엔터 없이 입력받기
+    // ECHO: 입력한 키 화면에 표시 안 하기
+    newt.c_lflag &= ~(ICANON | ECHO);
+
+    // IXON: Ctrl+S, Ctrl+Q 흐름 제어 비활성화 (매우 중요!)
+    newt.c_iflag &= ~(IXON | ICRNL); 
+
+    tcsetattr(STDIN_FILENO, TCSANOW, &newt);
+    ch = getchar();
+    tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
+    return ch;
 }
 
 /*-----------------------------------------------------------------------------
@@ -171,11 +296,34 @@ void cleanup_and_exit(int sig)
 void* send_thread_func(void* arg)
 {
 	char input[MSG_SIZE];
+    int mode = 0; // 0: fgets 모드, 1: getch 모드
 
 	(void)arg;
 
 	while (1) 
 	{
+		if(mode == 1)
+		{
+            Print("\n[Mode 1: getch] Press any key (Ctrl+Q to return Mode 0): \n");
+
+			while(mode)
+			{
+	            fflush(stdout);
+				
+	            int ch = getch();
+
+	            // Ctrl + Q 체크 (ASCII 17)
+	            if (ch == 17)
+				{
+	                Print("\nSwitching back to fgets mode...\n");
+	                mode = 0;
+					continue;
+	            }
+				
+				Print("Input Key: %c (Code: %d, 0x%02X)\n", ch, ch, ch);
+			}
+        }
+		
 		Print("Command > ");
 		fflush(stdout);
 
@@ -207,11 +355,21 @@ void* send_thread_func(void* arg)
 				cleanup_and_exit(SIGINT); // 시그널 핸들러를 수동 호출하여 즉시 종료
 			}
 
+			// "mode 1" 입력 시 전환
+			if (strcmp(input, "mode 1") == 0) 
+			{
+				Print("Switching to getch mode (Ctrl+Q to exit)...\n");
+				mode = 1;
+				continue;
+			}
+
 			// 2. pause/resume 제어
 			char cmd[10], target[20];
 			if (sscanf(input, "%s %s", cmd, target) == 2)
 			{
-				if (strcmp(cmd, "pause") == 0 || strcmp(cmd, "resume") == 0) 
+				if (strcmp(cmd, "pause") == 0 || strcmp(cmd, "resume") == 0
+					 || strcmp(cmd, "kill") == 0  || strcmp(cmd, "segfault") == 0
+					  || strcmp(cmd, "exec") == 0) 
 				{
 					control_process(cmd, target);
 					continue;
@@ -273,31 +431,6 @@ void* recv_thread_func(void* arg)
 }
 
 /*-----------------------------------------------------------------------------
-* 자식 프로세스의 상태를 감시하는 핸들러
-*
-*
-*---------------------------------------------------------------------------*/
-void sigchld_handler(int sig) 
-{
-    int status;
-    pid_t pid;
-
-    // 여러 자식이 동시에 종료될 수 있으므로 루프를 돌며 모두 처리
-    // WNOHANG: 자식이 종료되지 않았으면 블로킹 없이 바로 리턴
-    while ((pid = waitpid(-1, &status, WNOHANG)) > 0) 
-	{
-        if (WIFEXITED(status))
-		{
-            Print("[SKYLAB] Child (PID: %d) exited with status %d\n", pid, WEXITSTATUS(status));
-        } 
-		else if (WIFSIGNALED(status))
-		{
-            Print("[SKYLAB] Child (PID: %d) killed by signal %d\n", pid, WTERMSIG(status));
-        }
-    }
-}
-
-/*-----------------------------------------------------------------------------
 *
 *
 *
@@ -307,10 +440,27 @@ int main(void)
 	signal(SIGINT, cleanup_and_exit);
     struct sigaction sa;
 
-    // SIGCHLD 핸들러 설정
+	memset(my_path, 0x0, sizeof(my_path));
+	
+	// 1. 현재 SKYLAB의 실행 절대 경로 획득
+	ssize_t len = readlink("/proc/self/exe", my_path, sizeof(my_path) - 1);	
+	if (len != -1) 
+	{
+		my_path[len] = '\0'; // dirname은 원본을 수정할 수 있으므로 주의해서 사용
+		root_dir = dirname(my_path);	 
+	} 
+	else
+	{
+		Print("readlink failed\n");
+		return 1;
+	}
+
+    // SIGCHLD 핸들러는 자식 프로세스들이 생성되기 "전"에 핸들러 설정
     sa.sa_handler = sigchld_handler;
     sigemptyset(&sa.sa_mask);
-    sa.sa_flags = SA_RESTART | SA_NOCLDSTOP; // SA_RESTART: 인터럽트된 시스템 콜 재시작
+	// 중요: SA_NOCLDSTOP이 없어야 SIGSTOP을 감지할 수 있습니다.
+    //sa.sa_flags = SA_RESTART | SA_NOCLDSTOP; // SA_RESTART: 인터럽트된 시스템 콜 재시작
+    sa.sa_flags = SA_RESTART; // SA_RESTART: 인터럽트된 시스템 콜 재시작
     if (sigaction(SIGCHLD, &sa, NULL) == -1)
 	{
         Print("sigaction failed\n");
@@ -327,56 +477,32 @@ int main(void)
 
 	// 프로세스 초기화 및 생성
 	int nTask = 0;
-	char *names[] = {"taskParent", "taskChild1", "taskChild2", "taskChild3"};
-
-	nTask = 0;
-	// 1. taskParent 실행 (exec 사용 가정)
-	if ((p_pid = fork()) == 0)
+    // 2. 자식 프로세스 정보 초기화 (경로 설정)
+    char *names[] = {"taskParent", "taskChild1", "taskChild2", "taskChild3"};
+    for (int i = 0; i < MAX_TASK; i++) 
 	{
-		// output 폴더에 빌드된 taskParent 실행
-		execl("./output/taskParent", names[nTask], NULL);
-		Print("execl taskParent failed\n");
-		exit(1);
-	}
-	procs[nTask].pid = p_pid;
-	strcpy(procs[nTask].name, "taskParent");
-	procs[nTask].is_running = 1;
+        strcpy(procs[i].name, names[i]);
+        // root_dir(현재폴더) / output / 파일명 순으로 경로 합성
+        snprintf(procs[i].path, sizeof(procs[i].path), "%s/%s", root_dir, names[i]);
+    }
 
-	nTask = 1;
-	// 2. taskChild1 실행
-	if ((c1_pid = fork()) == 0) 
+    // 3. 프로세스 실행 (nTask 사용 예시)
+    for (nTask = 0; nTask < MAX_TASK; nTask++) 
 	{
-		execl("./output/taskChild1", "taskChild1", NULL);
-		Print("execl taskChild1 failed\n");
-		exit(1);
-	}
-	procs[nTask].pid = c1_pid;
-	strcpy(procs[nTask].name, names[nTask]);
-	procs[nTask].is_running = 1;
+        if ((procs[nTask].pid = fork()) == 0)
+		{
+            // 미리 계산된 절대 경로(procs[nTask].path)를 사용
+            Print("Executing: %s\n", procs[nTask].path);
+            
+            // execl(실행경로, argv[0], ..., NULL)
+            execl(procs[nTask].path, procs[nTask].name, (char *)NULL);
 
-	nTask = 2;
-	// 3. taskChild2 실행
-	if ((c2_pid = fork()) == 0) 
-	{
-		execl("./output/taskChild2", "taskChild2", NULL);
-		Print("execl taskChild2 failed\n");
-		exit(1);
-	}
-	procs[nTask].pid = c2_pid;
-	strcpy(procs[nTask].name, names[nTask]);
-	procs[nTask].is_running = 1;
-
-	nTask = 3;
-	// 4. taskChild3 실행
-	if ((c3_pid = fork()) == 0) 
-	{
-		execl("./output/taskChild3", "taskChild3", NULL);
-		Print("execl taskChild3 failed\n");
-		exit(1);
-	}
-	procs[nTask].pid = c3_pid;
-	strcpy(procs[nTask].name, names[nTask]);
-	procs[nTask].is_running = 1;
+            // execl 성공 시 아래는 실행되지 않음
+            Print("execl failed\n");
+            exit(1);
+        }
+        procs[nTask].is_running = PROC_ST_RUNNING;
+    }
 
 	prctl(PR_SET_NAME, "SKYLAB");
 	print_help();
