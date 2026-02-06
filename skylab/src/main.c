@@ -47,6 +47,7 @@
 *---------------------------------------------------------------------------*/
 #define MAX_TASK 	4 // except SKYLAB, taskParent, taskChild1, taskChild2, taskChild3
 #define MAX_PATH 	256 // except SKYLAB, taskParent, taskChild1, taskChild2, taskChild3
+#define MAX_BUF 	1024
 
 /*-----------------------------------------------------------------------------
 *
@@ -100,7 +101,7 @@ void print_help(void)
 	Print("--- Control Commands ---\n" 
 			"1. pause / resue / kill / exec  [taskParent/taskChild1/taskChild2/taskChild3]\n"
 			"2. status\n"
-			"3. mode   [1, using getch]\n"
+			"3. mode   [1:using getch]\n"
 			"4. help\n"
 			"5. exit\n"
 			"6. [Any text for IPC]\n------------------------\n");
@@ -293,6 +294,47 @@ int getch(void)
 *
 *
 *---------------------------------------------------------------------------*/
+void execute_command(void)
+{
+    char command[MAX_BUF];
+    char result[MAX_BUF];
+    FILE *fp;
+
+    // 1. 사용자로부터 명령어 입력 받기
+    Print("실행할 리눅스 명령어를 입력하세요: ");
+    if (fgets(command, sizeof(command), stdin) == NULL) 
+	{
+        return;
+    }
+
+    // fgets는 개행 문자(\n)까지 저장하므로 이를 제거해줘야 합니다.
+    command[strcspn(command, "\n")] = 0;
+
+    // 2. popen을 이용해 명령어 실행 및 읽기 모드로 파이프 열기
+    // "r"은 read 모드를 의미합니다.
+    fp = popen(command, "r");
+    if (fp == NULL) {
+        perror("명령어 실행 실패");
+        return;
+    }
+
+    // 3. 실행 결과 한 줄씩 읽어서 출력
+    Print("\n--- 실행 결과 ---\n");
+    while (fgets(result, sizeof(result), fp) != NULL) 
+	{
+        Print("%s", result);
+    }
+    Print("----------------\n");
+
+    // 4. 파이프 닫기
+    pclose(fp);
+}
+
+/*-----------------------------------------------------------------------------
+*
+*
+*
+*---------------------------------------------------------------------------*/
 void* send_thread_func(void* arg)
 {
 	char input[MSG_SIZE];
@@ -302,6 +344,9 @@ void* send_thread_func(void* arg)
 
 	while (1) 
 	{
+		////////////////////////////////////////////////////////////////////////////////
+		// getch
+		////////////////////////////////////////////////////////////////////////////////
 		if(mode == 1)
 		{
             Print("\n[Mode 1: getch] Press any key (Ctrl+Q to return Mode 0): \n");
@@ -362,6 +407,42 @@ void* send_thread_func(void* arg)
 				mode = 1;
 				continue;
 			}
+			// "mode 2" 입력 시 전환
+			else if (strcmp(input, "mode 2") == 0) 
+			{
+				Print("Switching to linux command mode (exit to exit)...\n");
+				mode = 2;
+				continue;
+			}
+
+			////////////////////////////////////////////////////////////////////////////////
+			// Linux command
+			////////////////////////////////////////////////////////////////////////////////
+			// --- 리눅스 명령어 실행 로직 추가 (exec 명령어) ---
+			if (strncmp(input, "exec ", 5) == 0)
+			{
+				char* shell_cmd = input + 5; // "exec " 이후의 문자열 추출
+				Print("[System] Executing : %s\n", shell_cmd);
+				FILE *fp = popen(shell_cmd, "r");
+				if (fp == NULL) 
+				{
+					Print("Failed to run command.\n");
+				} 
+				else
+				{
+					char res_buf[MAX_BUF]; // MAX_BUF는 적절히 정의(예: 1024)
+					Print("---------- Result ----------\n");
+					while (fgets(res_buf, sizeof(res_buf), fp) != NULL)
+					{
+						Print("%s", res_buf);
+					}
+
+					Print("----------------------------\n");
+					pclose(fp);
+				}
+
+				continue; // 실행 후 다시 입력 대기
+			}
 
 			// 2. pause/resume 제어
 			char cmd[10], target[20];
@@ -390,6 +471,9 @@ void* send_thread_func(void* arg)
 				continue;
 			}
 
+			////////////////////////////////////////////////////////////////////////////////
+			// Multi Process Message Send & Receive
+			////////////////////////////////////////////////////////////////////////////////
 			static Message msg;
 			memset(&msg, 0x0, sizeof(Message));
 			
@@ -492,7 +576,7 @@ int main(void)
         if ((procs[nTask].pid = fork()) == 0)
 		{
             // 미리 계산된 절대 경로(procs[nTask].path)를 사용
-            Print("Executing: %s\n", procs[nTask].path);
+            Print("Executing : %s\n", procs[nTask].path);
             
             // execl(실행경로, argv[0], ..., NULL)
             execl(procs[nTask].path, procs[nTask].name, (char *)NULL);
@@ -502,6 +586,7 @@ int main(void)
             exit(1);
         }
         procs[nTask].is_running = PROC_ST_RUNNING;
+		DelayUs(100);
     }
 
 	prctl(PR_SET_NAME, "SKYLAB");
