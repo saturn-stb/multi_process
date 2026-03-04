@@ -16,13 +16,15 @@ CUR_DIR := $(CURDIR)
 TARGET = SKYLAB
 OBJ_DIR = .obj
 SRC_DIR = ./src
-COMMON_DIR = ../common/src
+COMMON_DIR = ../common/util/src
+OS_DIR = ../common/os/src
 
 # 1. 소스 파일 목록 (현재 폴더 및 common 폴더의 .c 포함)
 # 현재 디렉토리와 common 디렉토리의 .c 파일을 각각 찾습니다.
 SRCS_LOCAL = $(wildcard $(SRC_DIR)/*.c)
 SRCS_COMMON = $(wildcard $(COMMON_DIR)/*.c)
-SRCS = $(SRCS_LOCAL) $(SRCS_COMMON)
+SRCS_OS = $(wildcard $(OS_DIR)/*.c)
+SRCS = $(SRCS_LOCAL) $(SRCS_COMMON) $(SRCS_OS)
 
 # 2. 오브젝트 파일 목록 (경로 정보를 제거하고 .obj 폴더 내에 생성되도록 설정)
 # notdir를 사용하여 ../common/ 같은 경로를 제거하고 파일명만 남긴 후 .obj/를 붙입니다.
@@ -30,13 +32,15 @@ OBJS = $(addprefix $(OBJ_DIR)/, $(notdir $(SRCS:.c=.o)))
 
 # 3. VPATH 설정: make가 실제 소스 위치를 찾을 디렉토리 목록 지정 
 # make가 .obj/ 아래에 없는 소스 파일을 찾을 때 참조할 경로입니다.
-VPATH = $(SRC_DIR) : $(COMMON_DIR)
+VPATH = $(SRC_DIR) : $(COMMON_DIR) : $(OS_DIR)
 
 # 4. 생성된 모든 .d 파일 목록 정의
 DEPS = $(OBJS:.o=.d)
 
 # 5. 인클루드 경로 설정
-INC_DIRS = ../common/inc inc
+INC_DIRS = inc
+INC_DIRS += ../common/util/inc
+INC_DIRS += ../common/os/inc
 INC_DIRS += $(shell find . -type d)
 INC_FLAGS := $(addprefix -I, $(INC_DIRS))
 
