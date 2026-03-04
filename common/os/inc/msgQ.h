@@ -28,13 +28,10 @@
 *
 *
 *---------------------------------------------------------------------------*/
-#define MSG_SIZE 				256
-#define QUEUE_SIZE 				16
+#define MSG_SIZE 				1024
+#define QUEUE_SIZE 				64
 
 #define SHM_NAME 				"/shm_queue"
-
-#define SHM_RECV_NAME 			"/m2p"
-#define SHM_SEND_NAME 			"/p2m"
 
 /*-----------------------------------------------------------------------------
 *
